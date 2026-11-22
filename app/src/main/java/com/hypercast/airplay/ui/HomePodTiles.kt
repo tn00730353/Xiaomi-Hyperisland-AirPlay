@@ -30,6 +30,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.hypercast.airplay.DeviceItem
+import com.hypercast.airplay.Role
+import com.hypercast.airplay.Target
+import com.hypercast.airplay.TargetState
 import com.hypercast.airplay.Phase
 import com.hypercast.airplay.PodKind
 import com.hypercast.airplay.R
@@ -52,12 +55,13 @@ fun Chip(text: String, modifier: Modifier = Modifier) {
  *  HomePod（1 / 2 代）→ 大顆小圖　HomePod mini → 小顆小圖　立體聲組 → 兩顆
  */
 @Composable
-fun DeviceRow(item: DeviceItem, active: Boolean, phase: Phase, onClick: () -> Unit) {
+fun DeviceRow(item: DeviceItem, target: Target?, phase: Phase, onClick: () -> Unit) {
     val p = LocalPalette.current
     val rx = item.primary
+    val active = target != null
     val status = when {
-        active && phase == Phase.Streaming -> "播放中"
-        active -> "連線中"
+        target != null && target.state == TargetState.Streaming -> "播放中"
+        target != null -> "連線中"
         rx.password -> "需要密碼"
         rx.ap2 -> "AirPlay 2"
         else -> "AirPlay"
@@ -77,7 +81,11 @@ fun DeviceRow(item: DeviceItem, active: Boolean, phase: Phase, onClick: () -> Un
                 GText(rx.name, 17, FontWeight.SemiBold)
                 GText(sub, 12, secondary = true)
             }
-            Chip(status)
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Chip(status)
+                // 只有兩台單顆喇叭分左右時才顯示聲道標籤
+                if (target != null && target.role != Role.Stereo) Chip(target.role.label)
+            }
         }
     }
 }

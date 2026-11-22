@@ -23,14 +23,14 @@ import com.hypercast.airplay.ui.ThemeStore
 class MainActivity : ComponentActivity() {
 
     private lateinit var discovery: RaopDiscovery
-    private var pendingReceiver: Receiver? = null
+    private var pendingTargets: List<Target> = emptyList()
 
     private val projectionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
-            val rx = pendingReceiver
+            val targets = pendingTargets
             val data = r.data
-            if (r.resultCode == RESULT_OK && data != null && rx != null) {
-                CastService.start(this, rx, r.resultCode, data)
+            if (r.resultCode == RESULT_OK && data != null && targets.isNotEmpty()) {
+                CastService.start(this, targets, r.resultCode, data)
             } else {
                 AirPlayStore.update { it.copy(message = "需要授權擷取音訊才能串流") }
             }
@@ -90,8 +90,9 @@ class MainActivity : ComponentActivity() {
     private fun hasMic() =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    private fun connect(rx: Receiver) {
-        pendingReceiver = rx
+    /** 先要權限與螢幕音訊擷取授權，再開始串流到 [targets]。 */
+    private fun startCasting(targets: List<Target>) {
+        pendingTargets = targets
         val need = mutableListOf<String>()
         if (!hasMic()) need += Manifest.permission.RECORD_AUDIO
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -106,6 +107,60 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 點一台裝置：
+     *  - 閒置時 → 開始串流到它
+     *  - 串流中且它不在清單 → 加入成第二台（最多 2 台）
+     *  - 串流中且它已在清單 → 把它移除（只剩一台時就是中斷）
+     */
+    private fun toggle(item: DeviceItem) {
+        val s = AirPlayStore.state.value
+        val rx = item.primary
+        val t = Target(rx, Role.Stereo, item.pair)
+        when (s.phase) {
+            Phase.Connecting -> Unit
+            Phase.Streaming -> when {
+                s.targets.any { it.rx.id == rx.id } -> CastService.remove(this, rx.id)
+                s.targets.size >= AirPlayStore.MAX_TARGETS ->
+                    AirPlayStore.update { it.copy(message = "最多同時串流到 ${AirPlayStore.MAX_TARGETS} 台裝置，請先移除一台") }
+                else -> CastService.add(this, t)
+            }
+            else -> startCasting(listOf(t))
+        }
+    }
+
+    // ---- 從 HyperIsland / 通知的「連線」重新連線到上次的裝置 ----
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var reconnectTries = 0
+
+    private fun handleIntent(i: android.content.Intent?) {
+        val intent = i ?: return
+        if (!intent.getBooleanExtra(CastService.EXTRA_RECONNECT, false)) return
+        intent.removeExtra(CastService.EXTRA_RECONNECT)
+        if (AirPlayStore.state.value.phase == Phase.Streaming || AirPlayStore.state.value.phase == Phase.Connecting) return
+        reconnectTries = 0
+        tryReconnect()
+    }
+
+    /** 探索剛啟動，裝置清單可能還是空的：最多等 10 秒。 */
+    private fun tryReconnect() {
+        val last = LastStore.load(this)
+        val rcv = AirPlayStore.state.value.receivers
+        val found = last.mapNotNull { (id, _, role) -> rcv.firstOrNull { it.id == id }?.let { it to role } }
+        if (last.isEmpty()) {
+            AirPlayStore.update { it.copy(message = "沒有上次的連線紀錄，請從清單選擇裝置") }
+            return
+        }
+        if (found.size == last.size || (found.isNotEmpty() && reconnectTries >= 20)) {
+            startCasting(found.take(AirPlayStore.MAX_TARGETS).map { (rx, role) ->
+                Target(rx, role, isStereoPair(rx, rcv))
+            })
+            return
+        }
+        if (reconnectTries++ < 20) handler.postDelayed({ tryReconnect() }, 500)
+        else AirPlayStore.update { it.copy(message = "找不到上次的裝置，請從清單重新選擇") }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -113,6 +168,7 @@ class MainActivity : ComponentActivity() {
         discovery = RaopDiscovery(this)
 
         android.util.Log.i("HyperCast", "Developed by ${BuildConfig.DEVELOPER}")
+        handleIntent(intent)
         var theme by mutableStateOf(ThemeStore.load(this))
         var delayMs by mutableStateOf(DelayStore.load(this))
 
@@ -128,7 +184,8 @@ class MainActivity : ComponentActivity() {
                 onDiagClear = { DiagLog.clear() },
                 theme = theme,
                 onTheme = { t: AppTheme -> theme = t; ThemeStore.save(this, t) },
-                onConnect = ::connect,
+                onToggle = ::toggle,
+                onChannelMode = AirPlayStore::applyChannelMode,
                 onDisconnect = { CastService.stop(this) },
                 onVolume = AirPlayStore::setVolume,
                 delayMs = delayMs,
@@ -136,6 +193,12 @@ class MainActivity : ComponentActivity() {
                 onMute = AirPlayStore::toggleMute,
             )
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
     }
 
     override fun onStart() {

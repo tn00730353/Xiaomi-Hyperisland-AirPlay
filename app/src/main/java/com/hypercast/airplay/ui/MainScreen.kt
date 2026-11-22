@@ -60,7 +60,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
+import com.hypercast.airplay.AirPlayStore
 import com.hypercast.airplay.BuildConfig
+import com.hypercast.airplay.ChannelMode
+import com.hypercast.airplay.Role
 import com.hypercast.airplay.DeviceItem
 import com.hypercast.airplay.DelayStore
 import com.hypercast.airplay.DiagLog
@@ -80,7 +83,8 @@ fun MainScreen(
     state: UiState,
     theme: AppTheme,
     onTheme: (AppTheme) -> Unit,
-    onConnect: (Receiver) -> Unit,
+    onToggle: (DeviceItem) -> Unit,
+    onChannelMode: (ChannelMode) -> Unit,
     onDisconnect: () -> Unit,
     onVolume: (Float) -> Unit,
     onMute: () -> Unit,
@@ -140,8 +144,17 @@ fun MainScreen(
                         CircleButton(R.drawable.ic_settings) { showSettings = true }
                     }
                     NowPlaying(state, onDisconnect, onVolume, onMute)
+                    if (state.phase == Phase.Streaming || state.phase == Phase.Connecting) {
+                        ChannelCard(state, onChannelMode)
+                    }
                     GText("我的裝置", 24, FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
-                    Devices(state, onConnect)
+                    if (state.phase == Phase.Streaming) {
+                        GText(
+                            "點另一台裝置可同時串流（最多 2 台），再點一次即移除。",
+                            12, secondary = true, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                        )
+                    }
+                    Devices(state, onToggle)
                 }
                 Spacer(Modifier.height(6.dp))
                 GText(
@@ -450,15 +463,16 @@ private fun NowPlaying(
     GlassCard(Modifier.fillMaxWidth(), radius = 36.dp) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             val streaming = state.phase == Phase.Streaming
+            val names = state.targets.joinToString(" ＋ ") { it.rx.name }.ifBlank { "AirPlay" }
             val title = when (state.phase) {
-                Phase.Streaming -> state.selected?.name ?: "AirPlay"
+                Phase.Streaming -> names
                 Phase.Connecting -> "正在連線…"
                 Phase.Error -> "連線失敗"
                 Phase.Idle -> "尚未連線"
             }
             val sub = when (state.phase) {
-                Phase.Streaming -> "正在串流系統音訊"
-                Phase.Connecting -> state.selected?.name ?: ""
+                Phase.Streaming -> state.message ?: "正在串流系統音訊"
+                Phase.Connecting -> names
                 Phase.Error -> state.message ?: "請再試一次"
                 Phase.Idle -> state.message ?: "從下方選一台裝置開始"
             }
@@ -480,8 +494,10 @@ private fun NowPlaying(
                     GText(sub, 14, secondary = true)
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Chip("立體聲")
-                        Chip(if (state.selected?.ap2 == true) "AirPlay 2" else "44.1 kHz")
+                        val split = state.targets.size == 2 && state.targets.any { it.role != Role.Stereo }
+                        Chip(if (split) "左右聲道" else "立體聲")
+                        if (state.targets.size >= 2) Chip("${state.targets.size} 台")
+                        else Chip(if (state.selected?.ap2 == true) "AirPlay 2" else "44.1 kHz")
                     }
                 }
             }
@@ -510,7 +526,7 @@ private fun NowPlaying(
 }
 
 @Composable
-private fun Devices(state: UiState, onConnect: (Receiver) -> Unit) {
+private fun Devices(state: UiState, onToggle: (DeviceItem) -> Unit) {
     val items = buildItems(state.receivers)
     if (items.isEmpty()) {
         GlassCard(Modifier.fillMaxWidth()) {
@@ -523,11 +539,75 @@ private fun Devices(state: UiState, onConnect: (Receiver) -> Unit) {
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
         for (d in items) {
-            val active = state.selected?.id == d.primary.id && state.phase != Phase.Idle && state.phase != Phase.Error
-            DeviceRow(d, active, state.phase) {
-                if (state.phase != Phase.Connecting) onConnect(d.primary)
+            val target = state.targets.firstOrNull { it.rx.id == d.primary.id }
+            DeviceRow(d, target, state.phase) {
+                if (state.phase != Phase.Connecting) onToggle(d)
             }
         }
+    }
+}
+
+/**
+ * 串流中的聲道卡片：
+ *  - 任一台本身就是 HomePod 立體聲組 → 提醒「已配對立體聲喇叭」，左右聲道由組內兩顆負責，不能再拆
+ *  - 兩台都是單顆喇叭 → 讓你選：兩台都播完整立體聲 / 左右聲道分開（A左 B右 / A右 B左）
+ */
+@Composable
+private fun ChannelCard(state: UiState, onMode: (ChannelMode) -> Unit) {
+    val p = LocalPalette.current
+    val t = state.targets
+    val pairs = t.filter { it.pair }
+    if (t.size < 2 && pairs.isEmpty()) return
+
+    GlassCard(Modifier.fillMaxWidth(), radius = 30.dp) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (pairs.isNotEmpty()) {
+                GText("已配對立體聲喇叭", 17, FontWeight.Bold)
+                GText(
+                    pairs.joinToString("、") { "「${it.rx.name}」" } +
+                        "已經是 HomePod 立體聲組：左右聲道已經由組內兩顆分別負責，App 會把它當成一台立體聲喇叭直接連到組內主機，" +
+                        "所以不能再拆成左 / 右。" +
+                        if (t.size >= 2) "另一台會同時播放完整立體聲。" else "",
+                    13, secondary = true,
+                )
+            } else {
+                GText("聲道設定", 17, FontWeight.Bold)
+                GText(
+                    "兩台都是單顆喇叭：可以讓它們各播一邊，自己組成立體聲。左右位置請依實際擺放選擇。",
+                    13, secondary = true,
+                )
+                val mode = AirPlayStore.channelMode(state)
+                val a = t[0].rx.name
+                val b = t[1].rx.name
+                ModeRow("兩台都播立體聲", "適合多房間同播", mode == ChannelMode.Both) { onMode(ChannelMode.Both) }
+                ModeRow("$a 左 ／ $b 右", "左右聲道分開", mode == ChannelMode.LeftRight) { onMode(ChannelMode.LeftRight) }
+                ModeRow("$a 右 ／ $b 左", "左右對調", mode == ChannelMode.RightLeft) { onMode(ChannelMode.RightLeft) }
+                GText(
+                    "兩台的延遲可能有些微差異；若聽起來左右不同步，請到設定微調音訊延遲。",
+                    11, secondary = true, alpha = 0.8f,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModeRow(title: String, desc: String, selected: Boolean, onClick: () -> Unit) {
+    val p = LocalPalette.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (selected) p.chip else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            GText(title, 15, FontWeight.SemiBold)
+            GText(desc, 12, secondary = true)
+        }
+        if (selected) GIcon(R.drawable.ic_check, p.accent, 20.dp)
     }
 }
 

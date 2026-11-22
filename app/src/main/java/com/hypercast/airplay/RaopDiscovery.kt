@@ -144,6 +144,8 @@ class RaopDiscovery(context: Context) {
                 groupId = (meta["pgid"]?.takeIf { it.isNotBlank() } ?: meta["gid"]) ?: "",
                 groupLeader = isTrue(meta["igl"]),
                 inGroup = isTrue(meta["gcgl"]) || isTrue(meta["pgcgl"]),
+                gid = meta["gid"]?.takeIf { it.isNotBlank() } ?: meta["pgid"] ?: "",
+                gcgl = isTrue(meta["gcgl"]) || isTrue(meta["pgcgl"]),
             )
         }.sortedBy { it.name.lowercase() }
         AirPlayStore.update { it.copy(receivers = list) }

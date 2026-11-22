@@ -122,7 +122,7 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
             "timingPort" to timingSock.localPort.toLong(),
             "timingProtocol" to "NTP",
             "isMultiSelectAirPlay" to true,
-            "groupContainsGroupLeader" to false,
+            "groupContainsGroupLeader" to rx.gcgl,
             "model" to "iPhone14,3",
             "name" to "HyperCast",
             "osBuildVersion" to "21A329",
@@ -132,6 +132,12 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
             "sourceVersion" to "540.31",
             "statsCollectionEnabled" to false,
         )
+        // 與 Base 相同：直接連立體聲組的主機（igl），並帶上群組 UUID，HomePod 會自己把聲音分給組內兩顆，保持左右聲道
+        val groupUuid = rx.gid.ifBlank { rx.groupId }
+        if (groupUuid.isNotBlank() && (rx.inGroup || rx.gcgl)) {
+            p1["groupUUID"] = groupUuid.uppercase()
+            DiagLog.d("AP2", "立體聲組：直連主機 ${rx.name}，groupUUID=${groupUuid.take(8)}…，groupContainsGroupLeader=${rx.gcgl}")
+        }
         val r1 = rtsp("SETUP", uri, plistHdr, BPlist.encode(p1))
         val m1 = decodeMap(r1.body)
         DiagLog.d("AP2", "SETUP(session) 回應：${describe(m1)}")

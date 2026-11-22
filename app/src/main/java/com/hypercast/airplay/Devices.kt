@@ -11,6 +11,12 @@ val Receiver.podKind: PodKind
         else -> PodKind.Generic
     }
 
+/** 這台接收端是否本身就是 HomePod 立體聲組（兩顆共用群組 ID，或帶有 gcgl 旗標的 HomePod）。 */
+fun isStereoPair(rx: Receiver, all: List<Receiver>): Boolean {
+    if (rx.groupId.isNotBlank() && all.count { it.groupId == rx.groupId } >= 2) return true
+    return rx.inGroup && rx.podKind != PodKind.Generic
+}
+
 /** 選單中的一個項目；pair = true 時顯示兩顆（立體聲組）。 */
 data class DeviceItem(val primary: Receiver, val pair: Boolean)
 

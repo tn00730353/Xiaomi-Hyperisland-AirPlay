@@ -1,6 +1,7 @@
 // © DylanLiao — HyperCast. Developer watermark: DylanLiao. All rights reserved.
 package com.hypercast.airplay.ap2
 
+import com.hypercast.airplay.PinBroker
 import com.hypercast.airplay.Alac
 import com.hypercast.airplay.CastSession
 import com.hypercast.airplay.DiagLog

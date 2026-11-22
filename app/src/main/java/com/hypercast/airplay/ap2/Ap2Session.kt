@@ -91,7 +91,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
         controlSock = DatagramSocket(0)
         timingSock = DatagramSocket(0)
 
-        pairTransient()
+        pairWithPinFallback()
 
         val keys = sessionKey
         inp = SecureIn(rawIn!!, Crypto.hkdf(keys, "Control-Salt", "Control-Read-Encryption-Key"))
@@ -162,11 +162,50 @@ class Ap2Session(private val rx: Receiver) : CastSession {
      * 注意：不可先送 /pair-pin-start —— 那會讓 Apple TV 在電視上顯示配對碼，
      * 而 transient 配對使用固定 PIN 3939，不需要螢幕配對碼。
      */
-    private fun pairTransient() {
+    private class AuthRejected(msg: String) : IOException(msg)
+
+    /**
+     * 先用固定碼 3939 做 transient 配對；裝置要求配對碼（pw=true、驗證失敗或 HTTP 470）時，
+     * 送 /pair-pin-start 讓裝置顯示配對碼，再請使用者輸入並以該碼重新配對（最多 3 次）。
+     */
+    private fun pairWithPinFallback() {
+        var needPin = rx.password
+        if (!needPin) {
+            try {
+                pairTransient("3939")
+                return
+            } catch (e: AuthRejected) {
+                DiagLog.d("AP2", "固定碼配對被拒絕，改用使用者輸入的配對碼：${e.message}")
+                needPin = true
+            }
+        }
+        var retry = false
+        for (attempt in 1..3) {
+            openConnection()
+            try {
+                http("POST", "/pair-pin-start", mapOf("Content-Type" to "application/octet-stream"), ByteArray(0))
+            } catch (e: IOException) {
+                DiagLog.d("AP2", "pair-pin-start：${e.message}（裝置通常會在回應後關閉連線）")
+            }
+            openConnection()
+            val pin = PinBroker.ask(rx.name, false, retry)
+                ?: throw IOException("已取消輸入配對碼")
+            try {
+                pairTransient(pin)
+                return
+            } catch (e: AuthRejected) {
+                DiagLog.d("AP2", "配對碼第 $attempt 次被拒絕：${e.message}")
+                retry = true
+                if (attempt == 3) throw IOException("配對碼錯誤：${e.message}")
+            }
+        }
+    }
+
+    private fun pairTransient(pin: String) {
         val hkp = mapOf("X-Apple-HKP" to "4")
         val hdr = hkp + ("Content-Type" to "application/octet-stream")
 
-        val srp = Srp("Pair-Setup", "3939")
+        val srp = Srp("Pair-Setup", pin)
         var m2: Map<Int, ByteArray>? = null
         var lastErr: IOException? = null
         // transient 旗標有的實作用 1 位元組、有的用 4 位元組，依序嘗試（每次都用全新連線）
@@ -183,7 +222,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
                 DiagLog.d("AP2", "pair-setup M1（flags $label）→ HTTP ${r.code}，${ms(t0)} ms，${tlvSummary(t)}")
                 val err = t[Tlv8.ERROR]?.firstOrNull()?.toInt()
                 if (r.code == 470) {
-                    lastErr = IOException(
+                    lastErr = AuthRejected(
                         "裝置要求授權（HTTP 470），不接受免配對碼的連線。Apple TV：設定 → AirPlay 與 HomeKit → 允許存取，" +
                             "選「同一網路上的任何人」並關閉密碼 / 裝置驗證；若是 HomePod 與 Apple TV 的組合，請改連組合內的 HomePod"
                     )
@@ -193,9 +232,9 @@ class Ap2Session(private val rx: Receiver) : CastSession {
                     m2 = t
                     break
                 }
-                lastErr = IOException(
-                    if (err != null) "配對被拒絕（${tlvErr(err)}）" else "$PAIR_HINT（HTTP ${r.code}）"
-                )
+                lastErr = if (err != null) AuthRejected("配對被拒絕（${tlvErr(err)}）")
+                else IOException("$PAIR_HINT（HTTP ${r.code}）")
+                if (lastErr is AuthRejected) break
             } catch (e: IOException) {
                 DiagLog.e("AP2", "pair-setup M1（flags $label）失敗（等待 ${ms(t0)} ms）", e)
                 lastErr = IOException(
@@ -223,9 +262,9 @@ class Ap2Session(private val rx: Receiver) : CastSession {
         DiagLog.d("AP2", "pair-setup M3 → HTTP ${r4.code}，${ms(t3)} ms，${tlvSummary(t4)}")
         val serverProof = t4[Tlv8.PROOF]
         val err4 = t4[Tlv8.ERROR]?.firstOrNull()?.toInt()
-        if (err4 != null) throw IOException("配對被拒絕（${tlvErr(err4)}）")
+        if (err4 != null) throw AuthRejected("配對被拒絕（${tlvErr(err4)}）")
         if (serverProof == null) throw IOException("$PAIR_HINT（M4 沒有 proof）")
-        if (!srp.verifyServer(serverProof)) throw IOException("配對驗證失敗（SRP 證明不符）")
+        if (!srp.verifyServer(serverProof)) throw AuthRejected("配對驗證失敗（SRP 證明不符，多半是配對碼錯誤）")
         sessionKey = srp.sessionKey
         DiagLog.d("AP2", "transient 配對成功，已建立加密通道金鑰")
     }

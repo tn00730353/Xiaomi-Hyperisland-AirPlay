@@ -87,7 +87,7 @@ class RaopSession(private val rx: Receiver) : CastSession {
         controlSock = DatagramSocket(0)
         timingSock = DatagramSocket(0)
 
-        rtsp("OPTIONS", "*")
+        rtsp("OPTIONS", "*", check = false)
 
         val useRsa = !rx.supportsPlain && rx.supportsRsa
         val sdp = StringBuilder()
@@ -107,7 +107,18 @@ class RaopSession(private val rx: Receiver) : CastSession {
             sdp.append("a=rsaaeskey:").append(Base64.encodeToString(rsaEncrypt(key), flags)).append("\r\n")
             sdp.append("a=aesiv:").append(Base64.encodeToString(iv, flags)).append("\r\n")
         }
-        rtsp("ANNOUNCE", uri, mapOf("Content-Type" to "application/sdp"), sdp.toString())
+        val annHdr = mapOf("Content-Type" to "application/sdp")
+        var ann = rtsp("ANNOUNCE", uri, annHdr, sdp.toString(), check = false)
+        if (ann.code == 403) {
+            // 部分新型 AirPlay 2 喇叭（Sonos、AirPort Express 等）要求先送 /auth-setup，否則 ANNOUNCE 回 403
+            DiagLog.d("RAOP", "ANNOUNCE 回 403，先送 /auth-setup 再重試")
+            val pub = ByteArray(32).also { rnd.nextBytes(it) }
+            pub[0] = (pub[0].toInt() and 248).toByte()
+            pub[31] = ((pub[31].toInt() and 127) or 64).toByte()
+            rtsp("POST", "/auth-setup", mapOf("Content-Type" to "application/octet-stream"), null, check = false, raw = byteArrayOf(1) + pub)
+            ann = rtsp("ANNOUNCE", uri, annHdr, sdp.toString(), check = false)
+        }
+        if (ann.code != 200) throw IOException(failText("ANNOUNCE", ann.code))
 
         val setup = rtsp(
             "SETUP", uri, mapOf(
@@ -250,11 +261,53 @@ class RaopSession(private val rx: Receiver) : CastSession {
 
     // ---------------------------------------------------------------- RTSP
 
-    private fun rtsp(method: String, target: String, headers: Map<String, String> = emptyMap(), body: String? = null): Resp =
-        synchronized(rtspLock) { rtspUnlocked(method, target, headers, body, true) }
+    private var authPw: String? = null
+    private var authRealm = ""
+    private var authNonce = ""
+
+    private fun md5(x: String) =
+        java.security.MessageDigest.getInstance("MD5").digest(x.toByteArray()).joinToString("") { "%02x".format(it) }
+
+    private fun authHeader(method: String, target: String): Map<String, String> {
+        val pw = authPw ?: return emptyMap()
+        val ha1 = md5("iTunes:$authRealm:$pw")
+        val resp = md5("$ha1:$authNonce:${md5("$method:$target")}")
+        return mapOf(
+            "Authorization" to "Digest username=\"iTunes\", realm=\"$authRealm\", nonce=\"$authNonce\", uri=\"$target\", response=\"$resp\""
+        )
+    }
+
+    private fun failText(method: String, code: Int) = when (code) {
+        401 -> "密碼錯誤或被拒絕"
+        453, 470 -> "此裝置需要 AirPlay 2 配對"
+        403 -> "$method 被拒絕（403）：裝置可能要求 AirPlay 2 或 MFi 驗證"
+        else -> "$method 失敗：RTSP $code"
+    }
+
+    /** 送出請求；遇到 401（Digest 密碼）時請使用者輸入密碼並重試。check=true 時非 200 會丟出例外。 */
+    private fun rtsp(
+        method: String, target: String, headers: Map<String, String> = emptyMap(), body: String? = null,
+        check: Boolean = true, raw: ByteArray? = null,
+    ): Resp {
+        var resp = synchronized(rtspLock) { rtspUnlocked(method, target, headers + authHeader(method, target), body, false, raw) }
+        var tries = 0
+        while (resp.code == 401 && tries < 3) {
+            val ch = resp.headers["www-authenticate"] ?: break
+            authRealm = Regex("realm=\"([^\"]*)\"").find(ch)?.groupValues?.get(1) ?: ""
+            authNonce = Regex("nonce=\"([^\"]*)\"").find(ch)?.groupValues?.get(1) ?: ""
+            DiagLog.d("RAOP", "裝置要求密碼（Digest，realm=$authRealm）")
+            val pw = PinBroker.ask(rx.name, true, tries > 0) ?: throw IOException("已取消輸入密碼")
+            authPw = pw
+            tries++
+            resp = synchronized(rtspLock) { rtspUnlocked(method, target, headers + authHeader(method, target), body, false, raw) }
+        }
+        if (check && resp.code != 200) throw IOException(failText(method, resp.code))
+        return resp
+    }
 
     private fun rtspUnlocked(
-        method: String, target: String, headers: Map<String, String>, body: String?, check: Boolean
+        method: String, target: String, headers: Map<String, String>, body: String?, check: Boolean,
+        raw: ByteArray? = null,
     ): Resp {
         val o = out ?: throw IOException("尚未連線")
         val sb = StringBuilder()
@@ -266,7 +319,7 @@ class RaopSession(private val rx: Receiver) : CastSession {
         sb.append("Active-Remote: 1234567890\r\n")
         sessionHdr?.let { sb.append("Session: $it\r\n") }
         headers.forEach { (k, v) -> sb.append("$k: $v\r\n") }
-        val bytes = body?.toByteArray(Charsets.UTF_8)
+        val bytes = raw ?: body?.toByteArray(Charsets.UTF_8)
         if (bytes != null) sb.append("Content-Length: ${bytes.size}\r\n")
         sb.append("\r\n")
         o.write(sb.toString().toByteArray(Charsets.UTF_8))

@@ -39,3 +39,8 @@ HomePod 系統 27 之後，舊的 AirPlay 1 即使回應成功也不會出聲，
 - 有密碼的接收端尚未支援。
 - 只能擷取允許被錄製的 App 音訊（部分 App 與 DRM 內容會是靜音）。
 - HyperIsland 的 JSON 欄位若與你的系統版本不符，只改 `HyperIsland.kt` 的 `buildParamJson`。
+
+## 配對碼 / 密碼（v1.1.3）
+- AirPlay 2 裝置要求配對碼時，App 會先請裝置顯示配對碼（/pair-pin-start），並跳出輸入框讓你輸入，最多重試 3 次。
+- AirPlay 1 裝置設有密碼（401 Digest）時，同樣會跳出密碼輸入框。
+- ANNOUNCE 回 403 的喇叭會自動先送 /auth-setup 再重試。

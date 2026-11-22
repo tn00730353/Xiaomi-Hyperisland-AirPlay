@@ -29,6 +29,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import com.hypercast.airplay.PinBroker
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -107,6 +115,8 @@ fun MainScreen(
     ) {
         Box(Modifier.fillMaxSize()) {
             GlassScene()
+            val pinReq by PinBroker.request.collectAsState()
+            pinReq?.let { PinDialog(it) }
             Column(
                 Modifier
                     .fillMaxSize()
@@ -495,6 +505,58 @@ private fun Devices(state: UiState, onConnect: (Receiver) -> Unit) {
             val active = state.selected?.id == d.primary.id && state.phase != Phase.Idle && state.phase != Phase.Error
             DeviceRow(d, active, state.phase) {
                 if (state.phase != Phase.Connecting) onConnect(d.primary)
+            }
+        }
+    }
+}
+
+/** 輸入裝置螢幕上的配對碼，或 AirPlay 密碼。 */
+@Composable
+private fun PinDialog(req: com.hypercast.airplay.PinRequest) {
+    val p = LocalPalette.current
+    var text by rememberSaveable { mutableStateOf("") }
+    Dialog(onDismissRequest = { PinBroker.cancel() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            Modifier
+                .padding(horizontal = 24.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(30.dp))
+                .background(if (p.dark) Color(0xF21C1C1E) else Color(0xF7FFFFFF))
+                .padding(22.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            GText(if (req.password) "輸入 AirPlay 密碼" else "輸入配對碼", 22, FontWeight.Bold)
+            GText(
+                if (req.password) "「${req.deviceName}」設定了 AirPlay 密碼。"
+                else "請輸入「${req.deviceName}」螢幕上顯示的配對碼。若沒有顯示，請輸入裝置說明書或 App 中的配對碼（常見為 3939）。",
+                14, secondary = true,
+            )
+            if (req.retry) GText("上一次輸入不正確，請再試一次。", 13, FontWeight.SemiBold)
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(54.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(p.chip)
+                    .padding(horizontal = 16.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                BasicTextField(
+                    value = text,
+                    onValueChange = { text = if (req.password) it else it.filter { c -> c.isDigit() }.take(8) },
+                    singleLine = true,
+                    textStyle = TextStyle(color = p.text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold),
+                    cursorBrush = SolidColor(p.accent),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = if (req.password) KeyboardType.Password else KeyboardType.NumberPassword
+                    ),
+                    visualTransformation = if (req.password) PasswordVisualTransformation() else VisualTransformation.None,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                DialogButton("取消", false, Modifier.weight(1f)) { PinBroker.cancel() }
+                DialogButton("連線", true, Modifier.weight(1f)) { if (text.isNotEmpty()) PinBroker.submit(text) }
             }
         }
     }

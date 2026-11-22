@@ -93,6 +93,15 @@ class Ap2Session(private val rx: Receiver) : CastSession {
         controlSock = DatagramSocket(0)
         timingSock = DatagramSocket(0)
 
+        // 與 Base 相同：配對前先在同一條連線取一次 /info（pairing-info）
+        try {
+            val ri = http("GET", "/info", emptyMap(), ByteArray(0))
+            DiagLog.d("AP2", "pairing-info：GET /info → HTTP ${ri.code}")
+        } catch (e: IOException) {
+            DiagLog.d("AP2", "pairing-info 失敗（${e.message}），重新連線後繼續")
+            openConnection()
+        }
+
         pairWithPinFallback()
 
         val keys = sessionKey
@@ -542,7 +551,14 @@ class Ap2Session(private val rx: Receiver) : CastSession {
         synchronized(rtspLock) {
             val o = out ?: throw IOException("尚未連線")
             val sb = StringBuilder("$method $path HTTP/1.1\r\n")
-            sb.append("User-Agent: AirPlay/540.31\r\n")
+            sb.append("User-Agent: AirPlay/381.13\r\n")
+            sb.append("Connection: keep-alive\r\n")
+            sb.append("X-Apple-Client-Name: HyperCast\r\n")
+            if (path == "/pair-pin-start") {
+                sb.append("DACP-ID: $dacpId\r\n")
+                sb.append("Active-Remote: 1234567890\r\n")
+                sb.append("Client-Instance: $dacpId\r\n")
+            }
             headers.forEach { (k, v) -> sb.append("$k: $v\r\n") }
             sb.append("Content-Length: ${body.size}\r\n\r\n")
             o.write(sb.toString().toByteArray())
@@ -563,7 +579,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
         val o = out ?: throw IOException("尚未連線")
         val sb = StringBuilder("$method $target RTSP/1.0\r\n")
         sb.append("CSeq: ${++cseq}\r\n")
-        sb.append("User-Agent: AirPlay/540.31\r\n")
+        sb.append("User-Agent: AirPlay/550.10\r\n")
         sb.append("DACP-ID: $dacpId\r\n")
         sb.append("Active-Remote: 1234567890\r\n")
         sb.append("Client-Instance: $dacpId\r\n")
@@ -655,7 +671,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
 
     companion object {
         private const val RING = 1024
-        private const val LATENCY = 88200L
+        private const val LATENCY = 22050L // 0.5 秒 @44.1kHz（與 Base 的「連接預留 0.5 秒」相同）
         private const val PAIR_HINT =
             "HomePod 拒絕配對。請在「家庭」App → HomePod 設定 → 允許喇叭與電視存取，改選「所有人」或「同一網路上的任何人」，並關閉密碼"
     }

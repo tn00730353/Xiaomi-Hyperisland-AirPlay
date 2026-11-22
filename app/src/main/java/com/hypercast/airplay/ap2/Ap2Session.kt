@@ -146,6 +146,12 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
         // 先連上事件通道再送第二段 SETUP（日誌顯示部分喇叭在此之前不會回應 streams SETUP）
         startEventChannel()
 
+        // 與 Base 相同的順序：session SETUP → 事件通道 → RECORD → stream SETUP。
+        // Base 完全不看 skipRecord，一律送出 RECORD（不帶 Range / RTP-Info），回傳非 200 也繼續。
+        // 之前遇到 skipRecord=true 就不送 RECORD，接收端因此不會開始播放（聲音有送、時間同步也正常，但喇叭沒聲音）。
+        val rec = synchronized(rtspLock) { rtspUnlocked("RECORD", uri, emptyMap(), null, false) }
+        DiagLog.d("AP2", "RECORD → ${rec.code}（session SETUP 回應 skipRecord=$skipRecord；與 Base 相同，一律送出，之後才送 stream SETUP）")
+
         // SETUP 第二段：音訊串流（realtime，ALAC 44.1kHz 立體聲）
         val stream = linkedMapOf<String, Any>(
             "audioFormat" to 0x40000L,
@@ -170,8 +176,6 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
         srvControl = (st["controlPort"] as? Long)?.toInt() ?: 0
         DiagLog.d("AP2", "接收端連接埠：audio=$srvAudio control=$srvControl event=$srvEvent；本機 audio=${audioSock.localPort} control=${controlSock.localPort} timing=${timingSock.localPort}")
 
-        if (skipRecord) DiagLog.d("AP2", "接收端要求略過 RECORD（skipRecord=true）")
-        else rtsp("RECORD", uri, mapOf("Range" to "npt=0-", "RTP-Info" to "seq=$seq;rtptime=$ts"))
         ready = true
         DiagLog.d("AP2", "RECORD 完成，開始送音訊")
         startThreads()
@@ -729,6 +733,7 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
         sb.append("DACP-ID: $dacpId\r\n")
         sb.append("Active-Remote: 1234567890\r\n")
         sb.append("Client-Instance: $dacpId\r\n")
+        sb.append("X-Apple-Client-Name: HyperCast\r\n")   // Base 的每個 RTSP 請求都帶這個標頭
         headers.forEach { (k, v) -> sb.append("$k: $v\r\n") }
         if (body != null) sb.append("Content-Length: ${body.size}\r\n")
         sb.append("\r\n")

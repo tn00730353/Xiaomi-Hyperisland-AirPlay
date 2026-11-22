@@ -1,4 +1,4 @@
-# HyperCast v1.2.7
+# HyperCast v1.2.8
 
 © DylanLiao — 開發者浮水印：所有原始碼檔案開頭、BuildConfig.DEVELOPER、Manifest meta-data 與畫面底部皆標示。
 
@@ -40,6 +40,11 @@ HomePod 會自動走 AirPlay 2。立體聲組不再經過 Apple TV 或個別連�
 ## 裝置分組（v1.2.2，對照 Base 修正）
 - 只有 HomePod 會被分組（分組鍵 tsid → gid → pgid）；Apple TV、其他喇叭、Mac 一律單獨一台，不再被併進 HomePod 群組，也不再被當成「組內主機」。
 - 同組 ≥ 2 顆 HomePod 時，清單多一個「HomePod 組合」項目，連線時直連每一顆 HomePod（transient 配對，免配對碼），不經過 Apple TV。
+
+## v1.2.8：RECORD 流程對齊 Base
+- 對照 Base 的原生程式：AirPlay 2 的順序是 **session SETUP → 事件通道 → RECORD → stream SETUP**，Base 完全不看 `skipRecord`，一律送 RECORD（不帶 Range / RTP-Info），回傳非 200 也繼續。
+- 先前遇到接收端回 `skipRecord=true` 就不送 RECORD，且 RECORD 排在 stream SETUP 之後；Sound Pro 這類裝置因此「聲音有送、時間同步也正常，但不出聲」。
+- RTSP 標頭補上 `X-Apple-Client-Name`（Base 的每個請求都有）。
 
 ## 配對碼 / 密碼
 - 裝置要求配對碼時（Apple TV / 與 Apple TV 組合的 HomePod），App 會送 `/pair-pin-start` 讓電視顯示 4 位數配對碼，輸入後走完整 HomeKit 配對（`X-Apple-HKP: 3`，Pair-Setup M1~M6）再 Pair-Verify，做法與 Base 相同；最多重試 3 次。

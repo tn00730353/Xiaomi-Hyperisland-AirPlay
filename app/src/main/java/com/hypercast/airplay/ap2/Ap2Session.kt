@@ -128,6 +128,17 @@ class Ap2Session(private val rx: Receiver) : CastSession {
         // 先連上事件通道再送第二段 SETUP（日誌顯示部分喇叭在此之前不會回應 streams SETUP）
         startEventChannel()
 
+        // 參考 Base1：session SETUP 之後先送 RECORD（失敗也繼續），再送串流 SETUP；部分喇叭（如 Sound Pro）否則不回應串流 SETUP
+        try {
+            val rr = synchronized(rtspLock) {
+                rtspUnlocked("RECORD", uri, mapOf("Range" to "npt=0-", "RTP-Info" to "seq=$seq;rtptime=$ts"), null, false)
+            }
+            DiagLog.d("AP2", "RECORD（串流 SETUP 之前）→ ${rr.code}")
+        } catch (e: IOException) {
+            DiagLog.e("AP2", "RECORD（串流 SETUP 之前）失敗", e)
+            throw e
+        }
+
         // SETUP 第二段：音訊串流（realtime，ALAC 44.1kHz 立體聲）
         val stream = linkedMapOf<String, Any>(
             "audioFormat" to 0x40000L,
@@ -152,9 +163,8 @@ class Ap2Session(private val rx: Receiver) : CastSession {
         srvControl = (st["controlPort"] as? Long)?.toInt() ?: 0
         DiagLog.d("AP2", "接收端連接埠：audio=$srvAudio control=$srvControl event=$srvEvent；本機 audio=${audioSock.localPort} control=${controlSock.localPort} timing=${timingSock.localPort}")
 
-        rtsp("RECORD", uri, mapOf("Range" to "npt=0-", "RTP-Info" to "seq=$seq;rtptime=$ts"))
         ready = true
-        DiagLog.d("AP2", "RECORD 完成，開始送音訊")
+        DiagLog.d("AP2", "串流 SETUP 完成，開始送音訊")
         startThreads()
     }
 
@@ -170,6 +180,22 @@ class Ap2Session(private val rx: Receiver) : CastSession {
      * 送 /pair-pin-start 讓裝置顯示配對碼，再請使用者輸入並以該碼重新配對（最多 3 次）。
      */
     private fun pairWithPinFallback() {
+        val hk3 = mapOf("X-Apple-HKP" to "3", "Content-Type" to "application/octet-stream")
+        val post: (String, ByteArray) -> Pair<Int, ByteArray> = { path, body ->
+            val r = http("POST", path, hk3, body)
+            r.code to r.body
+        }
+        PairStore.get(rx.id)?.let { saved ->
+            try {
+                sessionKey = HomeKit.verify(saved, post, ::tlvErr)
+                DiagLog.d("AP2", "使用已儲存的配對憑證完成 pair-verify")
+                return
+            } catch (e: HomeKit.Failure) {
+                DiagLog.d("AP2", "已儲存的憑證失效：${e.message}，重新配對")
+                PairStore.remove(rx.id)
+                openConnection()
+            }
+        }
         var needPin = rx.password
         if (!needPin) {
             try {
@@ -192,10 +218,15 @@ class Ap2Session(private val rx: Receiver) : CastSession {
             val pin = PinBroker.ask(rx.name, false, retry)
                 ?: throw IOException("已取消輸入配對碼")
             try {
-                pairTransient(pin)
+                val creds = HomeKit.setup(pin, post, ::tlvErr)
+                DiagLog.d("AP2", "HomeKit 配對（pair-setup M1–M6）成功，開始 pair-verify")
+                PairStore.put(rx.id, creds)
+                sessionKey = HomeKit.verify(creds, post, ::tlvErr)
+                DiagLog.d("AP2", "pair-verify 成功")
                 return
-            } catch (e: AuthRejected) {
-                DiagLog.d("AP2", "配對碼第 $attempt 次被拒絕：${e.message}")
+            } catch (e: HomeKit.Failure) {
+                DiagLog.d("AP2", "配對第 $attempt 次失敗：${e.message}")
+                if (!e.auth) throw e
                 retry = true
                 if (attempt == 3) throw IOException("配對碼錯誤：${e.message}")
             }

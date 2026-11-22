@@ -44,3 +44,7 @@ HomePod 系統 27 之後，舊的 AirPlay 1 即使回應成功也不會出聲，
 - AirPlay 2 裝置要求配對碼時，App 會先請裝置顯示配對碼（/pair-pin-start），並跳出輸入框讓你輸入，最多重試 3 次。
 - AirPlay 1 裝置設有密碼（401 Digest）時，同樣會跳出密碼輸入框。
 - ANNOUNCE 回 403 的喇叭會自動先送 /auth-setup 再重試。
+
+## v1.1.5
+- Apple TV / 組合裝置（回 HTTP 470）：改用 HomeKit 一般配對（X-Apple-HKP: 3，pair-setup M1–M6 + pair-verify），配對憑證存在本機，之後不必再輸入配對碼。
+- Sound Pro：在 session SETUP 之後先送 RECORD，再送串流 SETUP（參考 Base1 的順序）。

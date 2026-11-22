@@ -54,6 +54,7 @@ class RaopSession(private val rx: Receiver) : CastSession {
     private var aesIv: ByteArray? = null
     private val cipher: Cipher = Cipher.getInstance("AES/CBC/NoPadding")
 
+    @Volatile private var ready = false
     @Volatile private var closed = false
     private var seq = rnd.nextInt(0x10000)
     private var ts = rnd.nextInt().toLong() and 0xFFFFFFFFL
@@ -121,6 +122,7 @@ class RaopSession(private val rx: Receiver) : CastSession {
         srvControl = Regex("control_port=(\\d+)").find(transport)?.groupValues?.get(1)?.toInt() ?: 0
 
         rtsp("RECORD", uri, mapOf("Range" to "npt=0-", "RTP-Info" to "seq=$seq;rtptime=$ts"))
+        ready = true
 
         startThreads()
     }
@@ -155,6 +157,7 @@ class RaopSession(private val rx: Receiver) : CastSession {
 
     /** 0..1 → -30..0 dB；靜音為 -144 dB。 */
     override fun setVolume(volume: Float, muted: Boolean) {
+        if (!ready) return
         val db = if (muted || volume <= 0.001f) -144f else -30f + 30f * volume.coerceIn(0f, 1f)
         val body = "volume: ${"%.6f".format(java.util.Locale.US, db)}\r\n"
         ctl.execute {

@@ -68,6 +68,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
     private var first = true
     private var firstSync = true
     private val ring = arrayOfNulls<ByteArray>(RING)
+    @Volatile private var ready = false
     @Volatile private var sent = 0L
     @Volatile private var ntpReqs = 0
     @Volatile private var retrans = 0
@@ -123,6 +124,8 @@ class Ap2Session(private val rx: Receiver) : CastSession {
         val m1 = decodeMap(r1.body)
         DiagLog.d("AP2", "SETUP(session) 回應：${describe(m1)}")
         (m1["eventPort"] as? Long)?.let { srvEvent = it.toInt() }
+        // 先連上事件通道再送第二段 SETUP（日誌顯示部分喇叭在此之前不會回應 streams SETUP）
+        startEventChannel()
 
         // SETUP 第二段：音訊串流（realtime，ALAC 44.1kHz 立體聲）
         val stream = linkedMapOf<String, Any>(
@@ -148,9 +151,8 @@ class Ap2Session(private val rx: Receiver) : CastSession {
         srvControl = (st["controlPort"] as? Long)?.toInt() ?: 0
         DiagLog.d("AP2", "接收端連接埠：audio=$srvAudio control=$srvControl event=$srvEvent；本機 audio=${audioSock.localPort} control=${controlSock.localPort} timing=${timingSock.localPort}")
 
-        startEventChannel()
-
         rtsp("RECORD", uri, mapOf("Range" to "npt=0-", "RTP-Info" to "seq=$seq;rtptime=$ts"))
+        ready = true
         DiagLog.d("AP2", "RECORD 完成，開始送音訊")
         startThreads()
     }
@@ -180,6 +182,13 @@ class Ap2Session(private val rx: Receiver) : CastSession {
                 val t = Tlv8.decode(r.body)
                 DiagLog.d("AP2", "pair-setup M1（flags $label）→ HTTP ${r.code}，${ms(t0)} ms，${tlvSummary(t)}")
                 val err = t[Tlv8.ERROR]?.firstOrNull()?.toInt()
+                if (r.code == 470) {
+                    lastErr = IOException(
+                        "裝置要求授權（HTTP 470），不接受免配對碼的連線。Apple TV：設定 → AirPlay 與 HomeKit → 允許存取，" +
+                            "選「同一網路上的任何人」並關閉密碼 / 裝置驗證；若是 HomePod 與 Apple TV 的組合，請改連組合內的 HomePod"
+                    )
+                    break
+                }
                 if (t[Tlv8.STATE]?.firstOrNull()?.toInt() == 2 && t.containsKey(Tlv8.PUBLIC_KEY) && t.containsKey(Tlv8.SALT)) {
                     m2 = t
                     break
@@ -353,6 +362,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
     }
 
     override fun setVolume(volume: Float, muted: Boolean) {
+        if (!ready) return   // 連線完成前不可送 SET_PARAMETER（會插進配對流程）
         val db = if (muted || volume <= 0.001f) -144f else -30f + 30f * volume.coerceIn(0f, 1f)
         val body = "volume: ${"%.6f".format(java.util.Locale.US, db)}\r\n".toByteArray()
         ctl.execute {

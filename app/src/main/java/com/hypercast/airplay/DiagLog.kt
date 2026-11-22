@@ -205,6 +205,9 @@ object DiagLog {
         rx.forEach {
             d("MDNS", "  ${it.name}｜型號 ${it.model}｜${it.host}:${it.port}｜et=${it.et}｜pw=${it.password}｜AirPlay2=${it.ap2}｜群組=${it.groupId}｜gid=${it.gid}｜pgid=${it.pgid}｜tsid=${it.tsid}｜igl=${it.igl}｜gcgl=${it.gcgl}")
         }
+        val st = AirPlayStore.state.value
+        d("CAST", "目前狀態：${st.phase}｜音量 ${(st.volume * 100).toInt()}%｜靜音=${st.muted}｜目標：" +
+            st.targets.joinToString(" ＋ ") { "${it.rx.name}（型號 ${it.rx.model}｜${it.rx.host}｜AirPlay2=${it.rx.ap2}｜聲道 ${it.role.label}）" }.ifBlank { "無" })
     }
 
     // ------------------------------------------------------------ 概略位置（選用）

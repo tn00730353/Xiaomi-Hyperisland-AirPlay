@@ -383,7 +383,8 @@ class CastService : Service() {
                     }
                     val now = System.nanoTime()
                     if (now - lastLog > 10_000_000_000L) {
-                        DiagLog.d("CAST", "串流中：已送出 $frames 幀（${slots.count { it.live }} 台），近 10 秒最大振幅 $peak/32768（0 代表被擷取到的是靜音）")
+                        val vs = AirPlayStore.state.value
+                        DiagLog.d("CAST", "串流中：已送出 $frames 幀（${slots.count { it.live }} 台：${slots.joinToString(" ＋ ") { it.rx.name }}），接收端音量 ${(vs.volume * 100).toInt()}%、靜音=${vs.muted}，近 10 秒最大振幅 $peak/32768（0 代表被擷取到的是靜音）")
                         peak = 0
                         lastLog = now
                     }

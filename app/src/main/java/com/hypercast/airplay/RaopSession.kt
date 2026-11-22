@@ -171,6 +171,7 @@ class RaopSession(private val rx: Receiver) : CastSession {
         if (!ready) return
         val db = if (muted || volume <= 0.001f) -144f else -30f + 30f * volume.coerceIn(0f, 1f)
         val body = "volume: ${"%.6f".format(java.util.Locale.US, db)}\r\n"
+        DiagLog.d("VOL", "送出接收端音量 ${"%.1f".format(java.util.Locale.US, db)} dB（${rx.name}｜靜音=$muted｜滑桿 ${(volume * 100).toInt()}%）")
         ctl.execute {
             try {
                 rtsp("SET_PARAMETER", uri, mapOf("Content-Type" to "text/parameters"), body)

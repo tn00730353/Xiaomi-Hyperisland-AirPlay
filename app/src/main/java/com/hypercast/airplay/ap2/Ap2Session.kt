@@ -525,6 +525,7 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
         val hdr = ByteArray(12)
         hdr[0] = 0x80.toByte()
         hdr[1] = (if (first) 0xE0 else 0x60).toByte()
+        if (first) DiagLog.d("AP2", "送出第一個音訊封包：seq=$seq，rtp=$ts，ALAC ${alac.size} 位元組 → ${rx.host}:$srvAudio")
         first = false
         put16(hdr, 2, seq)
         put32(hdr, 4, ts)
@@ -553,6 +554,7 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
         if (!ready) return   // 連線完成前不可送 SET_PARAMETER（會插進配對流程）
         val db = if (muted || volume <= 0.001f) -144f else -30f + 30f * volume.coerceIn(0f, 1f)
         val body = "volume: ${"%.6f".format(java.util.Locale.US, db)}\r\n".toByteArray()
+        DiagLog.d("VOL", "送出接收端音量 ${"%.1f".format(java.util.Locale.US, db)} dB（${rx.name}｜靜音=$muted｜滑桿 ${(volume * 100).toInt()}%）")
         ctl.execute {
             try { rtsp("SET_PARAMETER", uri, mapOf("Content-Type" to "text/parameters"), body) } catch (_: Exception) {}
         }
@@ -633,6 +635,7 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
             if (srvControl == 0) return@scheduleAtFixedRate
             try {
                 val b = ByteArray(20)
+                if (firstSync) DiagLog.d("AP2", "送出第一個同步封包 → ${rx.host}:$srvControl（延遲 ${LATENCY} 個取樣，微調 ${DelayStore.ms} ms）")
                 b[0] = (if (firstSync) 0x90 else 0x80).toByte()
                 firstSync = false
                 b[1] = 0xD4.toByte(); b[2] = 0; b[3] = 7

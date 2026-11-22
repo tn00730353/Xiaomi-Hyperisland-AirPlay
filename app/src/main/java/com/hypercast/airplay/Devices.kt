@@ -11,34 +11,46 @@ val Receiver.podKind: PodKind
         else -> PodKind.Generic
     }
 
-/** 這台接收端是否本身就是 HomePod 立體聲組（兩顆共用群組 ID，或帶有 gcgl 旗標的 HomePod）。 */
+val Receiver.isHomePod: Boolean get() = model.startsWith("AudioAccessory")
+
+/** 這台接收端是否屬於 HomePod 組合（同一分組鍵的 HomePod ≥ 2 顆，或帶有 gcgl 旗標的 HomePod）。 */
 fun isStereoPair(rx: Receiver, all: List<Receiver>): Boolean {
-    if (rx.groupId.isNotBlank() && all.count { it.groupId == rx.groupId } >= 2) return true
-    return rx.inGroup && rx.podKind != PodKind.Generic
+    if (!rx.isHomePod) return false
+    if (rx.groupId.isNotBlank() && all.count { it.isHomePod && it.groupId == rx.groupId } >= 2) return true
+    return rx.inGroup
 }
 
-/** 選單中的一個項目；pair = true 時顯示兩顆（立體聲組）。 */
-data class DeviceItem(val primary: Receiver, val pair: Boolean)
+/**
+ * 選單中的一個項目。
+ * members = 實際要連線的接收端：單台裝置是 1 個；HomePod 組合是組內每一顆 HomePod（各自直連）。
+ */
+data class DeviceItem(
+    val primary: Receiver,
+    val pair: Boolean,
+    val members: List<Receiver> = listOf(primary),
+    val name: String = primary.name,
+)
 
 /**
- * 把搜尋到的接收端整理成選單項目。
- * 立體聲組的判斷（盡力而為）：
- *  - 多個接收端共用同一個群組 ID（pgid / gid）→ 合併成一個「兩顆」項目，優先連到群組主機（igl）
- *  - 單一接收端帶有 gcgl 旗標且是 HomePod → 視為立體聲組
+ * 把搜尋到的接收端整理成選單項目，做法對照 Base（AirPlayDevice.merge / grouping）：
+ *  - 只有 HomePod（AudioAccessory）會被分組；Apple TV、其他喇叭、Mac 永遠單獨一台。
+ *    （v1.2.0 把 Apple TV 也併進同一群組，並且選它當「主機」，所以一直卡在 Apple TV 的配對碼。）
+ *  - 同一分組鍵（tsid → gid → pgid）的 HomePod ≥ 2 顆 → 額外多一個「組合」項目，連線時每一顆 HomePod 各連一條。
+ *  - 每一台裝置仍保有自己的單獨項目，方便個別選擇。
  */
 fun buildItems(list: List<Receiver>): List<DeviceItem> {
-    val byGroup = list.filter { it.groupId.isNotBlank() }.groupBy { it.groupId }
-    val merged = HashSet<String>()
     val items = ArrayList<DeviceItem>()
-    for (rx in list) {
-        if (rx.id in merged) continue
-        val g = if (rx.groupId.isNotBlank()) byGroup[rx.groupId] else null
-        if (g != null && g.size >= 2) {
-            g.forEach { merged += it.id }
-            items += DeviceItem(g.firstOrNull { it.groupLeader } ?: g.first(), true)
-        } else {
-            items += DeviceItem(rx, rx.inGroup && rx.podKind != PodKind.Generic)
-        }
+    val pods = list.filter { it.isHomePod && it.groupId.isNotBlank() }.groupBy { it.groupId }
+    for ((_, g) in pods) {
+        if (g.size < 2) continue
+        val members = g.sortedWith(compareByDescending<Receiver> { it.groupLeader }.thenBy { it.name.lowercase() })
+        items += DeviceItem(
+            primary = members.first(),
+            pair = true,
+            members = members,
+            name = members.joinToString(" ＋ ") { it.name },
+        )
     }
+    for (rx in list) items += DeviceItem(rx, false)
     return items
 }

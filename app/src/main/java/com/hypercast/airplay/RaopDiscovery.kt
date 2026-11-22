@@ -139,14 +139,26 @@ class RaopDiscovery(context: Context) {
     private fun publish() {
         val list = raop.values.map { rx ->
             val meta = airplayMeta[rx.name]
-            if (meta == null) rx else rx.copy(
-                model = meta["model"]?.takeIf { it.isNotBlank() } ?: rx.model,
-                groupId = (meta["pgid"]?.takeIf { it.isNotBlank() } ?: meta["gid"]) ?: "",
-                groupLeader = isTrue(meta["igl"]),
-                inGroup = isTrue(meta["gcgl"]) || isTrue(meta["pgcgl"]),
-                gid = meta["gid"]?.takeIf { it.isNotBlank() } ?: meta["pgid"] ?: "",
-                gcgl = isTrue(meta["gcgl"]) || isTrue(meta["pgcgl"]),
-            )
+            if (meta == null) rx else {
+                val model = meta["model"]?.takeIf { it.isNotBlank() } ?: rx.model
+                val gid = meta["gid"].orEmpty()
+                val pgid = meta["pgid"].orEmpty()
+                val tsid = meta["tsid"].orEmpty()
+                val inGrp = isTrue(meta["gcgl"]) || isTrue(meta["pgcgl"])
+                if (!model.startsWith("AudioAccessory")) {
+                    // 與 Base 相同：Apple TV / 喇叭 / Mac 不參與 HomePod 分組，單獨連線，也不送 groupUUID
+                    rx.copy(model = model, pgid = pgid, tsid = tsid, igl = meta["igl"].orEmpty())
+                } else rx.copy(
+                    model = model,
+                    // 分組鍵順序與 Base 的 grouping() 相同：tsid → gid → pgid
+                    groupId = tsid.ifBlank { gid.ifBlank { pgid } },
+                    groupLeader = isTrue(meta["igl"]),
+                    inGroup = inGrp,
+                    gid = gid.ifBlank { pgid.ifBlank { tsid } },
+                    gcgl = inGrp,
+                    pgid = pgid, tsid = tsid, igl = meta["igl"].orEmpty(),
+                )
+            }
         }.sortedBy { it.name.lowercase() }
         AirPlayStore.update { it.copy(receivers = list) }
     }

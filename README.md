@@ -34,6 +34,10 @@
 ## HomePod / 立體聲組（AirPlay 2）
 HomePod 會自動走 AirPlay 2。立體聲組不再經過 Apple TV 或個別連成員，改成和 Base 相同的做法：直連組內主機（igl），在 SETUP 帶上 `groupUUID`（mDNS 的 gid）與 `groupContainsGroupLeader`（gcgl），由 HomePod 自己把聲音分給兩顆，保持左右聲道。使用前請在「家庭」App → 該裝置設定 → 允許喇叭與電視存取，改成「所有人」或「同一網路上的任何人」，並且不要設密碼。
 
+## 裝置分組（v1.2.2，對照 Base 修正）
+- 只有 HomePod 會被分組（分組鍵 tsid → gid → pgid）；Apple TV、其他喇叭、Mac 一律單獨一台，不再被併進 HomePod 群組，也不再被當成「組內主機」。
+- 同組 ≥ 2 顆 HomePod 時，清單多一個「HomePod 組合」項目，連線時直連每一顆 HomePod（transient 配對，免配對碼），不經過 Apple TV。
+
 ## 配對碼 / 密碼
 - 裝置要求配對碼時（Apple TV / 與 Apple TV 組合的 HomePod），App 會送 `/pair-pin-start` 讓電視顯示 4 位數配對碼，輸入後走完整 HomeKit 配對（`X-Apple-HKP: 3`，Pair-Setup M1~M6）再 Pair-Verify，做法與 Base 相同；最多重試 3 次。
 - 配對成功後身分會存在本機，之後連線只做 Pair-Verify，不必再輸入配對碼（若失效會自動清除並重新配對）。

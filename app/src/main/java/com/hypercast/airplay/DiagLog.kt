@@ -203,7 +203,7 @@ object DiagLog {
         val rx = AirPlayStore.state.value.receivers
         d("MDNS", "目前已發現 ${rx.size} 台裝置")
         rx.forEach {
-            d("MDNS", "  ${it.name}｜型號 ${it.model}｜${it.host}:${it.port}｜et=${it.et}｜pw=${it.password}｜AirPlay2=${it.ap2}｜群組=${it.groupId}")
+            d("MDNS", "  ${it.name}｜型號 ${it.model}｜${it.host}:${it.port}｜et=${it.et}｜pw=${it.password}｜AirPlay2=${it.ap2}｜群組=${it.groupId}｜gid=${it.gid}｜pgid=${it.pgid}｜tsid=${it.tsid}｜igl=${it.igl}｜gcgl=${it.gcgl}")
         }
     }
 

@@ -18,6 +18,9 @@ data class Receiver(
     val inGroup: Boolean = false,       // gcgl / pgcgl：屬於含主機的群組
     val gid: String = "",          // 群組 UUID（SETUP 的 groupUUID）
     val gcgl: Boolean = false,     // groupContainsGroupLeader（SETUP 同名欄位）
+    val pgid: String = "",         // 原始 pgid（上層群組，例如家庭劇院）
+    val tsid: String = "",         // 原始 tsid
+    val igl: String = "",          // 原始 igl，僅供診斷
 ) {
     private val etList get() = et.split(',').map { it.trim() }
     val supportsPlain get() = "0" in etList

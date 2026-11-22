@@ -115,17 +115,17 @@ class MainActivity : ComponentActivity() {
      */
     private fun toggle(item: DeviceItem) {
         val s = AirPlayStore.state.value
-        val rx = item.primary
-        val t = Target(rx, Role.Stereo, item.pair)
+        val ts = item.members.map { Target(it, Role.Stereo, item.pair) }
         when (s.phase) {
             Phase.Connecting -> Unit
             Phase.Streaming -> when {
-                s.targets.any { it.rx.id == rx.id } -> CastService.remove(this, rx.id)
-                s.targets.size >= AirPlayStore.MAX_TARGETS ->
+                item.members.any { m -> s.targets.any { it.rx.id == m.id } } ->
+                    item.members.filter { m -> s.targets.any { it.rx.id == m.id } }.forEach { CastService.remove(this, it.id) }
+                s.targets.size + ts.size > AirPlayStore.MAX_TARGETS ->
                     AirPlayStore.update { it.copy(message = "最多同時串流到 ${AirPlayStore.MAX_TARGETS} 台裝置，請先移除一台") }
-                else -> CastService.add(this, t)
+                else -> ts.forEach { CastService.add(this, it) }
             }
-            else -> startCasting(listOf(t))
+            else -> startCasting(ts.take(AirPlayStore.MAX_TARGETS))
         }
     }
 

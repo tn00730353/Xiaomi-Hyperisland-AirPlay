@@ -539,7 +539,7 @@ private fun Devices(state: UiState, onToggle: (DeviceItem) -> Unit) {
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
         for (d in items) {
-            val target = state.targets.firstOrNull { it.rx.id == d.primary.id }
+            val target = state.targets.firstOrNull { t -> d.members.any { it.id == t.rx.id } }
             DeviceRow(d, target, state.phase) {
                 if (state.phase != Phase.Connecting) onToggle(d)
             }
@@ -565,8 +565,8 @@ private fun ChannelCard(state: UiState, onMode: (ChannelMode) -> Unit) {
                 GText("已配對立體聲喇叭", 17, FontWeight.Bold)
                 GText(
                     pairs.joinToString("、") { "「${it.rx.name}」" } +
-                        "已經是 HomePod 立體聲組：左右聲道已經由組內兩顆分別負責，App 會把它當成一台立體聲喇叭直接連到組內主機，" +
-                        "所以不能再拆成左 / 右。" +
+                        "是 HomePod 組合：App 會直接連到組內每一顆 HomePod（和 Base 相同，不經過 Apple TV），" +
+                        "左右聲道由 HomePod 自己分配，所以不能再拆成左 / 右。" +
                         if (t.size >= 2) "另一台會同時播放完整立體聲。" else "",
                     13, secondary = true,
                 )

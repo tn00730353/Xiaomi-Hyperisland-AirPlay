@@ -67,7 +67,7 @@ fun DeviceRow(item: DeviceItem, target: Target?, phase: Phase, onClick: () -> Un
         else -> "AirPlay"
     }
     val sub = buildList {
-        if (item.pair) add("立體聲組")
+        if (item.pair) add("HomePod 組合 · ${item.members.size} 顆")
         if (rx.model.isNotBlank()) add(rx.model)
     }.joinToString(" · ").ifBlank { rx.host }
 
@@ -78,7 +78,7 @@ fun DeviceRow(item: DeviceItem, target: Target?, phase: Phase, onClick: () -> Un
             }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                GText(rx.name, 17, FontWeight.SemiBold)
+                GText(item.name, 17, FontWeight.SemiBold)
                 GText(sub, 12, secondary = true)
             }
             Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {

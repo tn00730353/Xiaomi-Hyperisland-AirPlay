@@ -15,8 +15,12 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
+import android.media.MediaMetadata
+import android.media.VolumeProvider
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -61,6 +65,7 @@ class CastService : Service() {
     override fun onCreate() {
         super.onCreate()
         com.hypercast.airplay.ap2.HapStore.init(this)
+        VolumeStore.init(this)
         nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CH, "AirPlay 串流狀態", NotificationManager.IMPORTANCE_DEFAULT).apply {
@@ -69,6 +74,56 @@ class CastService : Service() {
                 setShowBadge(false)
             }
         )
+        setupMediaSession()
+    }
+
+    // ------------------------------------------------------------ 系統音量鍵（MediaSession 遠端音量）
+
+    private var mediaSession: MediaSession? = null
+    private var volProvider: VolumeProvider? = null
+
+    /**
+     * 與 Base 的 LocalVolumeSession 同類做法：建立「遠端音量」MediaSession，讓手機實體音量鍵 / 系統音量滑桿
+     * 直接調整 AirPlay 接收端的音量。這個 session 只接管音量：
+     * 不處理 play / pause / stop（系統送來的這類指令一律忽略，避免被靜音或中斷），也不掛在通知上。
+     */
+    private fun setupMediaSession() {
+        try {
+            val ms = MediaSession(this, "HyperCast")
+            val vp = object : VolumeProvider(VolumeProvider.VOLUME_CONTROL_ABSOLUTE, 100, (AirPlayStore.state.value.volume * 100).roundToInt()) {
+                override fun onSetVolumeTo(volume: Int) { AirPlayStore.setVolume(volume / 100f) }
+                override fun onAdjustVolume(direction: Int) {
+                    if (direction > 0) AirPlayStore.adjust(+0.05f) else if (direction < 0) AirPlayStore.adjust(-0.05f)
+                }
+            }
+            ms.setCallback(object : MediaSession.Callback() {})   // 空實作：忽略所有播放控制
+            ms.setPlaybackToRemote(vp)
+            mediaSession = ms
+            volProvider = vp
+        } catch (e: Exception) {
+            DiagLog.d("CAST", "MediaSession 建立失敗：${e.message}")
+        }
+    }
+
+    private fun updateMediaSession(s: UiState, active: Boolean) {
+        val ms = mediaSession ?: return
+        try {
+            volProvider?.currentVolume = if (s.muted) 0 else (s.volume * 100).roundToInt()
+            if (active) {
+                ms.setMetadata(
+                    MediaMetadata.Builder()
+                        .putString(MediaMetadata.METADATA_KEY_TITLE, targetsTitle(s))
+                        .build()
+                )
+                ms.setPlaybackState(
+                    PlaybackState.Builder()
+                        .setState(PlaybackState.STATE_PLAYING, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
+                        .build()
+                )
+            }
+            if (ms.isActive != active) ms.isActive = active
+        } catch (_: Exception) {
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -94,7 +149,11 @@ class CastService : Service() {
         val code = i.getIntExtra("code", 0)
         val data = i.getParcelableExtra<Intent>("data")
 
-        AirPlayStore.update { it.copy(targets = targets, phase = Phase.Connecting, message = null) }
+        // 每次連線都套用上一次使用的音量（第一次是 25%），並且取消靜音；連線成功後不會自動開始「播放」，有聲音才算播放中
+        AirPlayStore.update {
+            it.copy(targets = targets, phase = Phase.Connecting, message = null,
+                volume = VolumeStore.load(), muted = false, playing = false)
+        }
         DiagLog.refreshLocation(this)
         DiagLog.d("CAST", "要求連線：" + targets.joinToString(" ＋ ") {
             "${it.rx.name}｜型號 ${it.rx.model}｜${it.rx.host}:${it.rx.port}｜聲道 ${it.role.label}｜立體聲組=${it.pair}｜AirPlay2=${it.rx.ap2}"
@@ -102,6 +161,7 @@ class CastService : Service() {
 
         // Android 14+：必須先進入 mediaProjection 前景狀態，才能取得 MediaProjection
         nm.cancel(NOTIF_ID_IDLE)
+        updateMediaSession(AirPlayStore.state.value, true)
         startForeground(NOTIF_ID, buildNotification(AirPlayStore.state.value),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
 
@@ -130,6 +190,7 @@ class CastService : Service() {
             AirPlayStore.state.collectLatest { s ->
                 delay(120)   // 滑動音量時合併更新，避免通知被系統限流
                 if (!running) return@collectLatest
+                updateMediaSession(s, true)
                 nm.notify(NOTIF_ID, buildNotification(s))
                 // 聲道分配由 UI 改狀態，這裡同步到各目標
                 s.targets.forEach { t -> slots.firstOrNull { it.rx.id == t.rx.id }?.role = t.role }
@@ -255,6 +316,7 @@ class CastService : Service() {
             val mix = ByteArray(Alac.FRAME_BYTES)
             val enc = arrayOfNulls<ByteArray>(Role.values().size)
             var frames = 0L
+            var lastSound = 0L
             var peak = 0
             var lastLog = System.nanoTime()
             while (running) {
@@ -265,6 +327,18 @@ class CastService : Service() {
                     off += n
                 }
                 if (!running) break
+
+                // 偵測目前擷取到的是不是有聲音（略過取樣，成本很低）
+                var pk = 0
+                var q = 0
+                while (q + 1 < buf.size) {
+                    val v = Math.abs((buf[q + 1].toInt() shl 8) or (buf[q].toInt() and 0xFF))
+                    if (v > pk) pk = v
+                    q += 32
+                }
+                val tNow = System.nanoTime()
+                if (pk > 150) { lastSound = tNow; AirPlayStore.setPlaying(true) }
+                else if (tNow - lastSound > 3_000_000_000L) AirPlayStore.setPlaying(false)
 
                 enc.fill(null)
                 for (slot in slots) {
@@ -326,8 +400,10 @@ class CastService : Service() {
     private fun stopCast(message: String?) {
         DiagLog.d("CAST", "停止串流：${message ?: "使用者中斷"}")
         stopWorker()
+        try { mediaSession?.isActive = false } catch (_: Exception) {}
         AirPlayStore.update {
             it.copy(
+                playing = false,
                 phase = if (message != null && message != "串流已結束") Phase.Error else Phase.Idle,
                 targets = emptyList(),
                 message = message,
@@ -342,6 +418,8 @@ class CastService : Service() {
 
     override fun onDestroy() {
         stopWorker()
+        try { mediaSession?.release() } catch (_: Exception) {}
+        mediaSession = null
         scope.cancel()
         super.onDestroy()
     }
@@ -353,6 +431,17 @@ class CastService : Service() {
         Intent(this, CastService::class.java).setAction(action),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
     )
+
+    /** 連接的裝置圖示：HomePod / HomePod mini / Apple TV / 一般 AirPlay。 */
+    private fun deviceIcon(rx: List<Receiver>): Int {
+        val m = rx.firstOrNull()?.model ?: ""
+        return when {
+            m.startsWith("AudioAccessory5") -> R.drawable.ic_homepod_mini
+            m.startsWith("AudioAccessory") -> R.drawable.ic_homepod
+            m.startsWith("AppleTV") -> R.drawable.ic_tv
+            else -> R.drawable.ic_airplay
+        }
+    }
 
     private fun targetsTitle(s: UiState): String = s.targets.joinToString(" ＋ ") { it.rx.name }.ifBlank { "AirPlay" }
 
@@ -421,10 +510,13 @@ class CastService : Service() {
         HyperIsland.apply(
             this, b,
             HyperIsland.Info(
-                mode = if (connecting) HyperIsland.Mode.Connecting else HyperIsland.Mode.Streaming,
-                title = title, subtitle = sub, volumePct = pct, muted = s.muted,
-                volDown = pi(ACTION_VOL_DOWN), volUp = pi(ACTION_VOL_UP),
-                mute = pi(ACTION_MUTE), stop = pi(ACTION_STOP),
+                mode = when {
+                    connecting -> HyperIsland.Mode.Connecting
+                    s.playing -> HyperIsland.Mode.Playing
+                    else -> HyperIsland.Mode.Connected
+                },
+                name = targetsTitle(s), iconRes = deviceIcon(s.targets.map { it.rx }),
+                volumePct = pct, muted = s.muted,
             )
         )
         return b.build()
@@ -454,8 +546,9 @@ class CastService : Service() {
         HyperIsland.apply(
             this, b,
             HyperIsland.Info(
-                mode = HyperIsland.Mode.Idle, title = names, subtitle = "已中斷 · 點「連線」重新連到上次的裝置",
-                volumePct = 0, muted = false, connect = reconnect, connectIsActivity = true,
+                mode = HyperIsland.Mode.Idle, name = names,
+                iconRes = deviceIcon(last.mapNotNull { (id, _, _) -> AirPlayStore.state.value.receivers.firstOrNull { it.id == id } }),
+                volumePct = (VolumeStore.load() * 100).roundToInt(), muted = false,
             )
         )
         nm.notify(NOTIF_ID_IDLE, b.build())

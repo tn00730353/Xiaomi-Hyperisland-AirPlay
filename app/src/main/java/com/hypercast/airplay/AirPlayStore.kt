@@ -49,8 +49,9 @@ data class UiState(
     val receivers: List<Receiver> = emptyList(),
     val targets: List<Target> = emptyList(),
     val phase: Phase = Phase.Idle,
-    val volume: Float = 0.5f,
+    val volume: Float = VolumeStore.DEFAULT,
     val muted: Boolean = false,
+    val playing: Boolean = false,   // 擷取到的音訊正在有聲音（連線成功但還沒有聲音時是 false）
     val message: String? = null,
 ) {
     /** 第一個目標（舊程式相容）。 */
@@ -65,7 +66,12 @@ object AirPlayStore {
 
     fun update(f: (UiState) -> UiState) = state.update(f)
 
-    fun setVolume(v: Float) = update { it.copy(volume = v.coerceIn(0f, 1f), muted = false) }
+    fun setVolume(v: Float) {
+        val x = v.coerceIn(0f, 1f)
+        update { it.copy(volume = x, muted = false) }
+        VolumeStore.save(x)
+    }
+    fun setPlaying(p: Boolean) { if (state.value.playing != p) update { it.copy(playing = p) } }
     fun adjust(delta: Float) = setVolume(state.value.volume + delta)
     fun toggleMute() = update { it.copy(muted = !it.muted) }
     fun setMuted(m: Boolean) = update { it.copy(muted = m) }

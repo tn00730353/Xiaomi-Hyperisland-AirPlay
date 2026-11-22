@@ -165,6 +165,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         DiagLog.init(this)
+        VolumeStore.init(this)
+        AirPlayStore.update { it.copy(volume = VolumeStore.load()) }
         discovery = RaopDiscovery(this)
 
         android.util.Log.i("HyperCast", "Developed by ${BuildConfig.DEVELOPER}")

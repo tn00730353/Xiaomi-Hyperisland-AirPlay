@@ -60,7 +60,7 @@ fun DeviceRow(item: DeviceItem, target: Target?, phase: Phase, onClick: () -> Un
     val rx = item.primary
     val active = target != null
     val status = when {
-        target != null && target.state == TargetState.Streaming -> "播放中"
+        target != null && target.state == TargetState.Streaming -> "已連線"
         target != null -> "連線中"
         rx.password -> "需要密碼"
         rx.ap2 -> "AirPlay 2"

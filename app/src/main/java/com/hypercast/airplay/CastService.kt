@@ -130,7 +130,13 @@ class CastService : Service() {
     private fun runCast(rx: Receiver, mp: MediaProjection) {
         var error: String? = null
         try {
-            val s: CastSession = if (rx.ap2) com.hypercast.airplay.ap2.Ap2Session(rx) else RaopSession(rx)
+            val s: CastSession = if (!rx.ap2) RaopSession(rx) else {
+                val members = if (rx.groupId.isBlank()) emptyList() else
+                    AirPlayStore.state.value.receivers.filter {
+                        it.ap2 && it.groupId == rx.groupId && it.id != rx.id && !it.model.startsWith("AppleTV")
+                    }
+                if (members.isEmpty()) com.hypercast.airplay.ap2.Ap2Session(rx) else GroupSession(rx, members)
+            }
             session = s
             val tConn = System.nanoTime()
             s.connect()

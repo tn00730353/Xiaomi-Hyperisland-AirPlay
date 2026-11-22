@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit
  *  4. RTP 音訊（ALAC 立體聲 44.1kHz），每個封包以 shk 做 ChaCha20-Poly1305 加密
  *  5. NTP 時間同步、同步封包、重送，沿用 AirPlay 1 的做法
  */
-class Ap2Session(private val rx: Receiver) : CastSession {
+class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true) : CastSession {
 
     private class Resp(val code: Int, val headers: Map<String, String>, val body: ByteArray)
 
@@ -175,7 +175,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
      * 注意：不可先送 /pair-pin-start —— 那會讓 Apple TV 在電視上顯示配對碼，
      * 而 transient 配對使用固定 PIN 3939，不需要螢幕配對碼。
      */
-    private class AuthRejected(msg: String) : IOException(msg)
+    class AuthRejected(msg: String) : IOException(msg)
 
     /**
      * 先用固定碼 3939 做 transient 配對；裝置要求配對碼（pw=true、驗證失敗或 HTTP 470）時，
@@ -183,11 +183,13 @@ class Ap2Session(private val rx: Receiver) : CastSession {
      */
     private fun pairWithPinFallback() {
         var needPin = rx.password
+        if (needPin && !allowPin) throw AuthRejected("裝置要求配對碼")
         if (!needPin) {
             try {
                 pairTransient("3939")
                 return
             } catch (e: AuthRejected) {
+                if (!allowPin) throw e
                 DiagLog.d("AP2", "固定碼配對被拒絕，改用使用者輸入的配對碼：${e.message}")
                 needPin = true
             }

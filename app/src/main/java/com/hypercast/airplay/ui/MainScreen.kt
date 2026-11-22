@@ -62,6 +62,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
 import com.hypercast.airplay.BuildConfig
 import com.hypercast.airplay.DeviceItem
+import com.hypercast.airplay.DelayStore
 import com.hypercast.airplay.DiagLog
 import com.hypercast.airplay.Phase
 import com.hypercast.airplay.PodKind
@@ -83,6 +84,8 @@ fun MainScreen(
     onDisconnect: () -> Unit,
     onVolume: (Float) -> Unit,
     onMute: () -> Unit,
+    delayMs: Int,
+    onDelay: (Int) -> Unit,
     diag: DiagLog.UiState,
     onDiagEnable: () -> Unit,
     onDiagDisable: () -> Unit,
@@ -127,7 +130,7 @@ fun MainScreen(
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 if (showSettings) {
-                    SettingsPage(theme, onTheme, diag, onDiagEnable, onDiagDisable, onDiagExport, onDiagClear) { showSettings = false }
+                    SettingsPage(theme, onTheme, delayMs, onDelay, diag, onDiagEnable, onDiagDisable, onDiagExport, onDiagClear) { showSettings = false }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -157,6 +160,8 @@ fun MainScreen(
 private fun SettingsPage(
     theme: AppTheme,
     onTheme: (AppTheme) -> Unit,
+    delayMs: Int,
+    onDelay: (Int) -> Unit,
     diag: DiagLog.UiState,
     onDiagEnable: () -> Unit,
     onDiagDisable: () -> Unit,
@@ -199,6 +204,22 @@ private fun SettingsPage(
                 }
                 if (i < all.size - 1) Divider()
             }
+        }
+    }
+
+    GText("音訊延遲", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                GText(if (delayMs > 0) "+$delayMs ms" else "$delayMs ms", 17, FontWeight.SemiBold)
+                GText("正值＝聲音更晚播出（對畫面太快時使用），負值＝更早；串流中可即時調整", 12, secondary = true)
+            }
+            Box(Modifier.clickableNoRipple { onDelay(delayMs - DelayStore.STEP) }.padding(12.dp)) { GText("－", 24, FontWeight.Bold) }
+            Box(Modifier.clickableNoRipple { onDelay(0) }.padding(8.dp)) { GText("0", 15, secondary = true) }
+            Box(Modifier.clickableNoRipple { onDelay(delayMs + DelayStore.STEP) }.padding(12.dp)) { GText("＋", 24, FontWeight.Bold) }
         }
     }
 

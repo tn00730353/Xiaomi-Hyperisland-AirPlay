@@ -245,7 +245,7 @@ class RaopSession(private val rx: Receiver) : CastSession {
                 firstSync = false
                 b[1] = 0xD4.toByte(); b[2] = 0; b[3] = 7
                 val cur = nextTs
-                put32(b, 4, (cur - LATENCY) and 0xFFFFFFFFL)
+                put32(b, 4, (cur - LATENCY - DelayStore.ticks) and 0xFFFFFFFFL)
                 put64(b, 8, ntpNow())
                 put32(b, 16, cur)
                 controlSock.send(DatagramPacket(b, b.size, addr, srvControl))

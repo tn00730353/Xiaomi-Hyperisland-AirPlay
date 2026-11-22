@@ -110,11 +110,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         DiagLog.init(this)
-        com.hypercast.airplay.ap2.PairStore.init(this)
         discovery = RaopDiscovery(this)
 
         android.util.Log.i("HyperCast", "Developed by ${BuildConfig.DEVELOPER}")
         var theme by mutableStateOf(ThemeStore.load(this))
+        var delayMs by mutableStateOf(DelayStore.load(this))
 
         setContent {
             val state by AirPlayStore.state.collectAsState()
@@ -131,6 +131,8 @@ class MainActivity : ComponentActivity() {
                 onConnect = ::connect,
                 onDisconnect = { CastService.stop(this) },
                 onVolume = AirPlayStore::setVolume,
+                delayMs = delayMs,
+                onDelay = { v: Int -> delayMs = DelayStore.save(this, v) },
                 onMute = AirPlayStore::toggleMute,
             )
         }

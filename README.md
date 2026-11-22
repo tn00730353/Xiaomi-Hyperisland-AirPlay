@@ -2,12 +2,6 @@
 
 把 Android 系統音訊以立體聲串流到 AirPlay（RAOP）裝置。Apple 液態玻璃風格 UI、小米 HyperIsland / 焦點通知、狀態列音量控制。
 
-## 取得 APK（不用裝 Android Studio）
-1. 在 GitHub 建一個新 repo，把這個資料夾的內容全部上傳（含隱藏的 `.github`）。
-2. 到 repo 的 **Actions → Build APK → Run workflow**（push 到 main 也會自動跑）。
-3. 完成後在該次執行頁面底部 **Artifacts** 下載 `LiquidCast-debug-apk`，解壓後安裝 `app-debug.apk`。
-
-## 本機編譯
 用 Android Studio（Ladybug 以上）開啟本資料夾，Run 即可；或 `gradle :app:assembleDebug`。
 
 ## 結構

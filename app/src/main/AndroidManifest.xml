@@ -17,7 +17,9 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.LiquidCast">
+        android:theme="@style/Theme.HyperCast">
+
+        <meta-data android:name="developer" android:value="DylanLiao" />
 
         <activity
             android:name=".MainActivity"

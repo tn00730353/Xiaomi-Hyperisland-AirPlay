@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "LiquidCast"
+rootProject.name = "HyperCast"
 include(":app")

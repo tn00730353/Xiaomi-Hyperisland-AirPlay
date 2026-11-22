@@ -3,6 +3,7 @@ package com.hypercast.airplay.ap2
 
 import com.hypercast.airplay.Alac
 import com.hypercast.airplay.CastSession
+import com.hypercast.airplay.DiagLog
 import com.hypercast.airplay.Receiver
 import java.io.BufferedInputStream
 import java.io.IOException

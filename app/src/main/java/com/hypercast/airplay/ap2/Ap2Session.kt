@@ -189,6 +189,18 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
      * 送 /pair-pin-start 讓裝置顯示配對碼，再請使用者輸入並以該碼重新配對（最多 3 次）。
      */
     private fun pairWithPinFallback() {
+        // 之前已用配對碼完成過 HomeKit 配對 → 只做 Pair-Verify，不必再輸入配對碼
+        HapStore.load(rx.id)?.let { creds ->
+            try {
+                pairVerify(creds)
+                DiagLog.d("AP2", "使用已儲存的配對身分完成 Pair-Verify")
+                return
+            } catch (e: Exception) {
+                DiagLog.d("AP2", "已儲存的配對身分無法使用（${e.message}），清除後重新配對")
+                HapStore.clear(rx.id)
+                openConnection()
+            }
+        }
         var needPin = rx.password
         if (needPin && !allowPin) throw AuthRejected("裝置要求配對碼")
         if (!needPin) {
@@ -213,7 +225,9 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
             val pin = PinBroker.ask(rx.name, false, retry)
                 ?: throw IOException("已取消輸入配對碼")
             try {
-                pairTransient(pin)
+                // 與 Base 相同：螢幕上的配對碼必須走完整 HomeKit 配對（X-Apple-HKP: 3，M1~M6）＋ Pair-Verify；
+                // transient（HKP: 4）只接受固定碼 3939，所以不論輸入什麼螢幕碼都會被拒絕。
+                pairHap(pin)
                 return
             } catch (e: AuthRejected) {
                 DiagLog.d("AP2", "配對碼第 $attempt 次被拒絕：${e.message}")
@@ -289,6 +303,119 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
         if (!srp.verifyServer(serverProof)) throw AuthRejected("配對驗證失敗（SRP 證明不符，多半是配對碼錯誤）")
         sessionKey = srp.sessionKey
         DiagLog.d("AP2", "transient 配對成功，已建立加密通道金鑰")
+    }
+
+    /** 完整 HomeKit Pair-Setup（M1~M6，配對碼）→ 儲存身分 → Pair-Verify。 */
+    private fun pairHap(pin: String) {
+        if (pin.length != 4 || !pin.all { it.isDigit() }) throw AuthRejected("配對碼必須是 4 位數字")
+        val hdr = mapOf("X-Apple-HKP" to "3", "Content-Type" to "application/octet-stream")
+        val srp = Srp("Pair-Setup", pin)
+
+        // M1 → M2
+        val m1 = Tlv8.encode(listOf(Tlv8.METHOD to byteArrayOf(0), Tlv8.STATE to byteArrayOf(1)))
+        var t0 = System.nanoTime()
+        val r2 = http("POST", "/pair-setup", hdr, m1)
+        val t2 = Tlv8.decode(r2.body)
+        DiagLog.d("AP2", "pair-setup(HKP3) M1 → HTTP ${r2.code}，${ms(t0)} ms，${tlvSummary(t2)}")
+        t2[Tlv8.ERROR]?.firstOrNull()?.toInt()?.let { throw AuthRejected("配對被拒絕（${tlvErr(it)}）") }
+        if (r2.code == 470) throw AuthRejected(PAIR_HINT)
+        if (t2[Tlv8.STATE]?.firstOrNull()?.toInt() != 2 || !t2.containsKey(Tlv8.PUBLIC_KEY) || !t2.containsKey(Tlv8.SALT))
+            throw IOException("$PAIR_HINT（M2 內容不完整，HTTP ${r2.code}）")
+
+        // M3 → M4
+        val proof = srp.computeProof(t2[Tlv8.SALT]!!, t2[Tlv8.PUBLIC_KEY]!!)
+        val m3 = Tlv8.encode(
+            listOf(Tlv8.STATE to byteArrayOf(3), Tlv8.PUBLIC_KEY to srp.publicKey, Tlv8.PROOF to proof)
+        )
+        t0 = System.nanoTime()
+        val r4 = http("POST", "/pair-setup", hdr, m3)
+        val t4 = Tlv8.decode(r4.body)
+        DiagLog.d("AP2", "pair-setup(HKP3) M3 → HTTP ${r4.code}，${ms(t0)} ms，${tlvSummary(t4)}")
+        t4[Tlv8.ERROR]?.firstOrNull()?.toInt()?.let { throw AuthRejected("配對被拒絕（${tlvErr(it)}）") }
+        val serverProof = t4[Tlv8.PROOF] ?: throw IOException("$PAIR_HINT（M4 沒有 proof）")
+        if (!srp.verifyServer(serverProof)) throw AuthRejected("配對碼錯誤（SRP 證明不符）")
+        val k = srp.sessionKey
+
+        // M5 → M6：交換 Ed25519 身分
+        val encKey = Crypto.hkdf(k, "Pair-Setup-Encrypt-Salt", "Pair-Setup-Encrypt-Info")
+        val ctrlX = Crypto.hkdf(k, "Pair-Setup-Controller-Sign-Salt", "Pair-Setup-Controller-Sign-Info")
+        val (seed, ltpk) = HapCrypto.newEd25519()
+        val ctrlId = UUID.randomUUID().toString().uppercase()
+        val ctrlIdB = ctrlId.toByteArray(Charsets.US_ASCII)
+        val sig = HapCrypto.sign(seed, ctrlX + ctrlIdB + ltpk)
+        val inner = Tlv8.encode(
+            listOf(Tlv8.IDENTIFIER to ctrlIdB, Tlv8.PUBLIC_KEY to ltpk, Tlv8.SIGNATURE to sig)
+        )
+        val sealed = Crypto.chachaSeal(encKey, HapCrypto.nonce("PS-Msg05"), ByteArray(0), inner)
+        val m5 = Tlv8.encode(listOf(Tlv8.STATE to byteArrayOf(5), Tlv8.ENCRYPTED to sealed))
+        t0 = System.nanoTime()
+        val r6 = http("POST", "/pair-setup", hdr, m5)
+        val t6 = Tlv8.decode(r6.body)
+        DiagLog.d("AP2", "pair-setup(HKP3) M5 → HTTP ${r6.code}，${ms(t0)} ms，${tlvSummary(t6)}")
+        t6[Tlv8.ERROR]?.firstOrNull()?.toInt()?.let { throw IOException("配對在交換身分時被拒絕（${tlvErr(it)}）") }
+        val enc6 = t6[Tlv8.ENCRYPTED] ?: throw IOException("Pair-Setup M6 沒有裝置身分")
+        val plain6 = Crypto.chachaOpen(encKey, HapCrypto.nonce("PS-Msg06"), ByteArray(0), enc6)
+            ?: throw IOException("Pair-Setup M6 解密失敗")
+        val i6 = Tlv8.decode(plain6)
+        val accId = i6[Tlv8.IDENTIFIER]
+        val accLtpk = i6[Tlv8.PUBLIC_KEY]
+        val accSig = i6[Tlv8.SIGNATURE]
+        if (accId == null || accLtpk == null || accSig == null) throw IOException("Pair-Setup M6 裝置身分不完整")
+        val accX = Crypto.hkdf(k, "Pair-Setup-Accessory-Sign-Salt", "Pair-Setup-Accessory-Sign-Info")
+        if (!HapCrypto.verify(accLtpk, accX + accId + accLtpk, accSig)) throw IOException("Pair-Setup M6 裝置簽章驗證失敗")
+        DiagLog.d("AP2", "HomeKit 配對完成，改用 Pair-Verify 建立加密通道")
+
+        val creds = HapCreds(ctrlId, seed, accId, accLtpk)
+        HapStore.save(rx.id, creds)
+
+        // 與 Base 相同：以新連線做 Pair-Verify
+        openConnection()
+        try {
+            pairVerify(creds)
+        } catch (e: AuthRejected) {
+            HapStore.clear(rx.id)
+            throw IOException("配對成功但驗證失敗：${e.message}")
+        }
+    }
+
+    /** Pair-Verify（M1~M4）：以 X25519 ＋ 已配對的 Ed25519 身分建立加密通道金鑰。 */
+    private fun pairVerify(c: HapCreds) {
+        val hdr = mapOf("Content-Type" to "application/octet-stream")
+        val (cPriv, cPub) = HapCrypto.newX25519()
+        val m1 = Tlv8.encode(listOf(Tlv8.STATE to byteArrayOf(1), Tlv8.PUBLIC_KEY to cPub))
+        var t0 = System.nanoTime()
+        val r2 = http("POST", "/pair-verify", hdr, m1)
+        val t2 = Tlv8.decode(r2.body)
+        DiagLog.d("AP2", "pair-verify M1 → HTTP ${r2.code}，${ms(t0)} ms，${tlvSummary(t2)}")
+        t2[Tlv8.ERROR]?.firstOrNull()?.toInt()?.let { throw AuthRejected("Pair-Verify 被拒絕（${tlvErr(it)}）") }
+        val accPub = t2[Tlv8.PUBLIC_KEY]
+        val enc2 = t2[Tlv8.ENCRYPTED]
+        if (accPub == null || enc2 == null) throw AuthRejected("Pair-Verify M2 內容不完整（HTTP ${r2.code}）")
+
+        val shared = HapCrypto.x25519(cPriv, accPub)
+        val k = Crypto.hkdf(shared, "Pair-Verify-Encrypt-Salt", "Pair-Verify-Encrypt-Info")
+        val plain2 = Crypto.chachaOpen(k, HapCrypto.nonce("PV-Msg02"), ByteArray(0), enc2)
+            ?: throw AuthRejected("Pair-Verify M2 解密失敗")
+        val i2 = Tlv8.decode(plain2)
+        val accId = i2[Tlv8.IDENTIFIER]
+        val accSig = i2[Tlv8.SIGNATURE]
+        if (accId == null || accSig == null) throw AuthRejected("Pair-Verify M2 沒有裝置身分")
+        if (!accId.contentEquals(c.accessoryId)) throw AuthRejected("Pair-Verify M2 裝置身分與配對時不同")
+        if (!HapCrypto.verify(c.accessoryLtpk, accPub + accId + cPub, accSig)) throw AuthRejected("Pair-Verify 裝置簽章驗證失敗")
+
+        val ctrlIdB = c.controllerId.toByteArray(Charsets.US_ASCII)
+        val sig3 = HapCrypto.sign(c.ltsk, cPub + ctrlIdB + accPub)
+        val inner = Tlv8.encode(listOf(Tlv8.IDENTIFIER to ctrlIdB, Tlv8.SIGNATURE to sig3))
+        val sealed = Crypto.chachaSeal(k, HapCrypto.nonce("PV-Msg03"), ByteArray(0), inner)
+        val m3 = Tlv8.encode(listOf(Tlv8.STATE to byteArrayOf(3), Tlv8.ENCRYPTED to sealed))
+        t0 = System.nanoTime()
+        val r4 = http("POST", "/pair-verify", hdr, m3)
+        val t4 = Tlv8.decode(r4.body)
+        DiagLog.d("AP2", "pair-verify M3 → HTTP ${r4.code}，${ms(t0)} ms，${tlvSummary(t4)}")
+        t4[Tlv8.ERROR]?.firstOrNull()?.toInt()?.let { throw AuthRejected("Pair-Verify 被拒絕（${tlvErr(it)}）") }
+        if (r4.code != 200) throw AuthRejected("Pair-Verify M4 失敗（HTTP ${r4.code}）")
+        sessionKey = shared   // 之後以 Control-Salt 由此衍生 RTSP / 事件通道金鑰
+        DiagLog.d("AP2", "Pair-Verify 成功，已建立加密通道金鑰")
     }
 
     private fun tlvErr(code: Int) = when (code) {

@@ -15,8 +15,12 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
+import android.media.MediaMetadata
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
+import android.media.VolumeProvider
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -60,7 +64,9 @@ class CastService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        com.hypercast.airplay.ap2.HapStore.init(this)
         nm = getSystemService(NotificationManager::class.java)
+        setupMediaSession()
         nm.createNotificationChannel(
             NotificationChannel(CH, "AirPlay 串流狀態", NotificationManager.IMPORTANCE_DEFAULT).apply {
                 setSound(null, null)
@@ -68,6 +74,66 @@ class CastService : Service() {
                 setShowBadge(false)
             }
         )
+    }
+
+    // ------------------------------------------------------------ MediaSession（HyperIsland / 系統音量鍵控制）
+
+    private var mediaSession: MediaSession? = null
+    private var volProvider: VolumeProvider? = null
+
+    /**
+     * 與 Base 的 LocalVolumeSession 同類做法：建立一個「遠端音量」MediaSession。
+     * HyperOS 的超級島 / 控制中心會把它顯示成媒體控制，實體音量鍵與系統音量滑桿也會直接調整接收端音量，
+     * 不依賴焦點通知 JSON 欄位是否正確。
+     */
+    private fun setupMediaSession() {
+        try {
+            val ms = MediaSession(this, "HyperCast")
+            val vp = object : VolumeProvider(VolumeProvider.VOLUME_CONTROL_ABSOLUTE, 100, 50) {
+                override fun onSetVolumeTo(volume: Int) { AirPlayStore.setVolume(volume / 100f) }
+                override fun onAdjustVolume(direction: Int) {
+                    when {
+                        direction > 0 -> AirPlayStore.adjust(+0.06f)
+                        direction < 0 -> AirPlayStore.adjust(-0.06f)
+                    }
+                }
+            }
+            ms.setCallback(object : MediaSession.Callback() {
+                override fun onPause() { AirPlayStore.setMuted(true) }
+                override fun onPlay() { AirPlayStore.setMuted(false) }
+                override fun onStop() { stopCast(null) }
+            })
+            ms.setPlaybackToRemote(vp)
+            mediaSession = ms
+            volProvider = vp
+        } catch (e: Exception) {
+            DiagLog.d("CAST", "MediaSession 建立失敗：${e.message}")
+        }
+    }
+
+    private fun updateMediaSession(s: UiState, active: Boolean) {
+        val ms = mediaSession ?: return
+        try {
+            val pct = if (s.muted) 0 else (s.volume * 100).roundToInt()
+            volProvider?.currentVolume = pct
+            ms.setMetadata(
+                MediaMetadata.Builder()
+                    .putString(MediaMetadata.METADATA_KEY_TITLE, targetsTitle(s))
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, streamingSubtitle(s))
+                    .build()
+            )
+            ms.setPlaybackState(
+                PlaybackState.Builder()
+                    .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_STOP)
+                    .setState(
+                        if (active && !s.muted) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
+                        PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f
+                    )
+                    .build()
+            )
+            ms.isActive = active
+        } catch (_: Exception) {
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -101,6 +167,7 @@ class CastService : Service() {
 
         // Android 14+：必須先進入 mediaProjection 前景狀態，才能取得 MediaProjection
         nm.cancel(NOTIF_ID_IDLE)
+        updateMediaSession(AirPlayStore.state.value, true)
         startForeground(NOTIF_ID, buildNotification(AirPlayStore.state.value),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
 
@@ -129,6 +196,7 @@ class CastService : Service() {
             AirPlayStore.state.collectLatest { s ->
                 delay(120)   // 滑動音量時合併更新，避免通知被系統限流
                 if (!running) return@collectLatest
+                updateMediaSession(s, true)
                 nm.notify(NOTIF_ID, buildNotification(s))
                 // 聲道分配由 UI 改狀態，這裡同步到各目標
                 s.targets.forEach { t -> slots.firstOrNull { it.rx.id == t.rx.id }?.role = t.role }
@@ -325,6 +393,7 @@ class CastService : Service() {
     private fun stopCast(message: String?) {
         DiagLog.d("CAST", "停止串流：${message ?: "使用者中斷"}")
         stopWorker()
+        try { mediaSession?.isActive = false } catch (_: Exception) {}
         AirPlayStore.update {
             it.copy(
                 phase = if (message != null && message != "串流已結束") Phase.Error else Phase.Idle,
@@ -341,6 +410,8 @@ class CastService : Service() {
 
     override fun onDestroy() {
         stopWorker()
+        try { mediaSession?.release() } catch (_: Exception) {}
+        mediaSession = null
         scope.cancel()
         super.onDestroy()
     }
@@ -405,7 +476,12 @@ class CastService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_TRANSPORT)
-            .setStyle(Notification.DecoratedCustomViewStyle())
+            .setStyle(
+                Notification.DecoratedMediaCustomViewStyle().apply {
+                    mediaSession?.let { setMediaSession(it.sessionToken) }
+                    setShowActionsInCompactView(0, 1, 2)
+                }
+            )
             .setCustomContentView(rv)
             .setContentIntent(open)
             .apply {

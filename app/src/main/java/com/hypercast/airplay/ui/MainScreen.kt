@@ -644,7 +644,7 @@ private fun PinDialog(req: com.hypercast.airplay.PinRequest) {
             ) {
                 BasicTextField(
                     value = text,
-                    onValueChange = { text = if (req.password) it else it.filter { c -> c.isDigit() }.take(8) },
+                    onValueChange = { text = if (req.password) it else it.filter { c -> c.isDigit() }.take(4) },
                     singleLine = true,
                     textStyle = TextStyle(color = p.text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold),
                     cursorBrush = SolidColor(p.accent),

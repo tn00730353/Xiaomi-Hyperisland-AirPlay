@@ -114,11 +114,14 @@ class Srp(private val user: String, private val pass: String) {
 
 object Tlv8 {
     const val METHOD = 0x00
+    const val IDENTIFIER = 0x01
     const val SALT = 0x02
     const val PUBLIC_KEY = 0x03
     const val PROOF = 0x04
+    const val ENCRYPTED = 0x05
     const val STATE = 0x06
     const val ERROR = 0x07
+    const val SIGNATURE = 0x0A
     const val FLAGS = 0x13
 
     fun encode(items: List<Pair<Int, ByteArray>>): ByteArray {

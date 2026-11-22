@@ -126,6 +126,7 @@ object HyperIsland {
         JSONObject().apply {
             put("actionIcon", pic)
             put("actionTitle", title)
+            put("action", key)                                // 對應 miui.focus.actions 內的 Notification.Action
             put("actionIntentType", if (activity) 1 else 3)   // 1 = Activity、3 = Service
             put("actionIntent", key)
             put("actionBgColor", hex(bg))                     // 半透明玻璃底（系統決定最終混色）

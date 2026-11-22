@@ -19,13 +19,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -41,12 +44,17 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
 import com.hypercast.airplay.BuildConfig
 import com.hypercast.airplay.DeviceItem
+import com.hypercast.airplay.DiagLog
 import com.hypercast.airplay.Phase
 import com.hypercast.airplay.PodKind
 import com.hypercast.airplay.R
@@ -67,6 +75,11 @@ fun MainScreen(
     onDisconnect: () -> Unit,
     onVolume: (Float) -> Unit,
     onMute: () -> Unit,
+    diag: DiagLog.UiState,
+    onDiagEnable: () -> Unit,
+    onDiagDisable: () -> Unit,
+    onDiagExport: () -> Unit,
+    onDiagClear: () -> Unit,
 ) {
     val palette = paletteFor(theme)
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -104,7 +117,7 @@ fun MainScreen(
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 if (showSettings) {
-                    SettingsPage(theme, onTheme) { showSettings = false }
+                    SettingsPage(theme, onTheme, diag, onDiagEnable, onDiagDisable, onDiagExport, onDiagClear) { showSettings = false }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -131,9 +144,19 @@ fun MainScreen(
 // ---------------------------------------------------------------- 設定頁
 
 @Composable
-private fun SettingsPage(theme: AppTheme, onTheme: (AppTheme) -> Unit, onBack: () -> Unit) {
+private fun SettingsPage(
+    theme: AppTheme,
+    onTheme: (AppTheme) -> Unit,
+    diag: DiagLog.UiState,
+    onDiagEnable: () -> Unit,
+    onDiagDisable: () -> Unit,
+    onDiagExport: () -> Unit,
+    onDiagClear: () -> Unit,
+    onBack: () -> Unit,
+) {
     val p = LocalPalette.current
     val ctx = LocalContext.current
+    var showConsent by rememberSaveable { mutableStateOf(false) }
 
     Row(verticalAlignment = Alignment.CenterVertically) {
         CircleButton(R.drawable.ic_back, onClick = onBack)
@@ -180,6 +203,52 @@ private fun SettingsPage(theme: AppTheme, onTheme: (AppTheme) -> Unit, onBack: (
         }
     }
 
+    GText("診斷", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { if (diag.enabled) onDiagDisable() else showConsent = true }
+                    .padding(horizontal = 18.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    GText("日誌記錄", 17, FontWeight.SemiBold)
+                    GText(
+                        if (diag.enabled) "記錄中 · ${diag.entries} 筆 · ${diag.sizeKb} KB"
+                        else "關閉。開啟後會記錄連線過程，協助找出連線失敗的原因",
+                        12, secondary = true,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                GlassToggle(diag.enabled)
+            }
+            if (diag.enabled || diag.entries > 0) {
+                Divider()
+                ActionRow(
+                    "匯出日誌檔（.log）",
+                    "檔名含時間日期與地點：" + if (diag.place.isBlank()) "未知地點" else diag.place,
+                    onDiagExport,
+                )
+                Divider()
+                ActionRow("清除日誌", "刪除本機已記錄的所有內容", onDiagClear)
+            }
+            Divider()
+            GText(
+                "日誌只存在這支手機，不會自動上傳；只有你自己匯出並傳給別人，資料才會離開手機。",
+                12, secondary = true, modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+            )
+        }
+    }
+
+    if (showConsent) {
+        ConsentDialog(
+            onAgree = { showConsent = false; onDiagEnable() },
+            onCancel = { showConsent = false },
+        )
+    }
+
     GText("HyperIsland", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
     GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
         Column {
@@ -205,6 +274,120 @@ private fun InfoRow(label: String, value: String) {
 private fun Divider() {
     val p = LocalPalette.current
     Box(Modifier.fillMaxWidth().padding(horizontal = 18.dp).height(0.5.dp).background(p.text2.copy(alpha = 0.25f)))
+}
+
+@Composable
+private fun GlassToggle(on: Boolean) {
+    val p = LocalPalette.current
+    Box(
+        Modifier
+            .width(52.dp)
+            .height(30.dp)
+            .clip(RoundedCornerShape(15.dp))
+            .background(if (on) p.accent else p.track),
+    ) {
+        Box(
+            Modifier
+                .align(if (on) Alignment.CenterEnd else Alignment.CenterStart)
+                .padding(3.dp)
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(Color.White)
+        )
+    }
+}
+
+@Composable
+private fun ActionRow(title: String, desc: String?, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 16.dp)
+    ) {
+        GText(title, 17, FontWeight.SemiBold)
+        if (desc != null) GText(desc, 12, secondary = true)
+    }
+}
+
+@Composable
+private fun ConsentBlock(title: String, body: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        GText(title, 15, FontWeight.Bold)
+        GText(body, 13, secondary = true)
+    }
+}
+
+@Composable
+private fun DialogButton(text: String, filled: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val p = LocalPalette.current
+    Box(
+        modifier
+            .height(48.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(if (filled) p.accent else p.chip)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (filled) {
+            BasicText(text, style = TextStyle(color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold))
+        } else {
+            GText(text, 16, FontWeight.SemiBold)
+        }
+    }
+}
+
+/** 開啟日誌前的同意書：說明收集的資料、用途與使用者權益。 */
+@Composable
+private fun ConsentDialog(onAgree: () -> Unit, onCancel: () -> Unit) {
+    val p = LocalPalette.current
+    Dialog(onDismissRequest = onCancel, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            Modifier
+                .padding(horizontal = 18.dp)
+                .fillMaxWidth()
+                .heightIn(max = 640.dp)
+                .clip(RoundedCornerShape(30.dp))
+                .background(if (p.dark) Color(0xF21C1C1E) else Color(0xF7FFFFFF))
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            GText("開啟日誌記錄前，請先閱讀", 20, FontWeight.Bold)
+            Column(
+                Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                ConsentBlock(
+                    "用途",
+                    "只用來分析 AirPlay 連線失敗或沒有聲音的原因，協助開發者除錯。不會用於廣告、行銷或其他用途。",
+                )
+                ConsentBlock(
+                    "將會收集的資料",
+                    "1. 手機資料：品牌、型號、Android 與 HyperOS 版本、App 版本、語言、時區。\n" +
+                        "2. 網路狀態：目前是 Wi-Fi 或行動網路、是否使用 VPN、Wi-Fi 頻段與訊號強度（不含 Wi-Fi 名稱與密碼）。\n" +
+                        "3. AirPlay 裝置資料：裝置名稱、型號、功能旗標、區網廣播內容、連接埠；IP 位址最後一段與 MAC 位址會被遮蔽。\n" +
+                        "4. 連線過程：配對與各階段的回應碼、耗時、錯誤訊息與例外堆疊、串流封包統計、近 10 秒音訊最大振幅（只是一個數字，用來判斷是否擷取到靜音）。\n" +
+                        "5. 概略位置（選用）：需要你授權「概略位置」，每次連線時讀取一次，座標四捨五入到約 1 公里，只用來為日誌檔命名；不會持續追蹤。轉換成地名時，系統的地理編碼服務可能會處理這組座標。不授權也能使用，檔名會標示為「未知地點」。",
+                )
+                ConsentBlock(
+                    "不會收集",
+                    "播放的音訊內容、通知內容、通訊錄、相簿、帳號密碼、配對碼與加密金鑰、Wi-Fi 名稱與密碼。",
+                )
+                ConsentBlock(
+                    "資料如何處理",
+                    "日誌只存放在本機 App 私有空間，不會自動上傳。只有你按下「匯出日誌檔」並自行分享給別人，內容才會離開手機。容量上限約 1 MB，超過時會自動捨棄最舊的紀錄。解除安裝 App 時會一併刪除。",
+                )
+                ConsentBlock(
+                    "你的權益",
+                    "不同意不影響 App 的任何功能。你可以隨時在「設定 → 診斷」關閉記錄、清除已記錄的內容，也可以在系統設定撤回位置權限。匯出前請自行確認日誌內容再決定是否分享。",
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                DialogButton("不同意", false, Modifier.weight(1f), onCancel)
+                DialogButton("同意並開始記錄", true, Modifier.weight(1.4f), onAgree)
+            }
+        }
+    }
 }
 
 private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier =

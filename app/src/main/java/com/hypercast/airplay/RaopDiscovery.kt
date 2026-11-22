@@ -29,6 +29,7 @@ class RaopDiscovery(context: Context) {
         override fun onDiscoveryStarted(serviceType: String) {}
         override fun onDiscoveryStopped(serviceType: String) {}
         override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+            DiagLog.d("MDNS", "搜尋 $serviceType 失敗，錯誤碼 $errorCode")
             AirPlayStore.update { it.copy(message = "搜尋裝置失敗 ($errorCode)") }
         }
         override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
@@ -77,6 +78,7 @@ class RaopDiscovery(context: Context) {
         @Suppress("DEPRECATION")
         nsd.resolveService(next, object : NsdManager.ResolveListener {
             override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
+                DiagLog.d("MDNS", "解析 ${info.serviceName} 失敗，錯誤碼 $errorCode")
                 synchronized(this@RaopDiscovery) { resolving = false }
                 pump()
             }
@@ -98,6 +100,7 @@ class RaopDiscovery(context: Context) {
     private fun handle(info: NsdServiceInfo) {
         val attrs = info.attributes.mapValues { String(it.value ?: ByteArray(0)) }
         if (info.serviceType.contains("_airplay")) {
+            DiagLog.d("MDNS", "AirPlay 廣播：${info.serviceName} TXT=$attrs")
             synchronized(this) {
                 airplayMeta[info.serviceName] = attrs
                 publish()
@@ -116,6 +119,7 @@ class RaopDiscovery(context: Context) {
             model = attrs["am"] ?: "",
             ap2 = isAirPlay2(attrs),
         )
+        DiagLog.d("MDNS", "RAOP 廣播：${info.serviceName} → $host:${info.port}，AirPlay2=${rx.ap2}，TXT=$attrs")
         synchronized(this) {
             raop[info.serviceName] = rx
             publish()

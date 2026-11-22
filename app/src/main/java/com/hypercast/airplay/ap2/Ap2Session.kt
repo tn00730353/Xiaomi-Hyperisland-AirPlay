@@ -67,6 +67,11 @@ class Ap2Session(private val rx: Receiver) : CastSession {
     private var first = true
     private var firstSync = true
     private val ring = arrayOfNulls<ByteArray>(RING)
+    @Volatile private var sent = 0L
+    @Volatile private var ntpReqs = 0
+    @Volatile private var retrans = 0
+    private var tick = 0
+    private var fbErr = 0
 
     private val ctl = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "ap2-ctl").apply { isDaemon = true }
@@ -76,17 +81,9 @@ class Ap2Session(private val rx: Receiver) : CastSession {
 
     override fun connect() {
         addr = InetAddress.getByName(rx.host)
-        val s = Socket()
-        s.connect(InetSocketAddress(addr, rx.port), 5000)
-        s.soTimeout = 8000
-        s.tcpNoDelay = true
-        sock = s
-        rawIn = BufferedInputStream(s.getInputStream())
-        rawOut = s.getOutputStream()
-        inp = rawIn
-        out = rawOut
-        localIp = s.localAddress.hostAddress?.substringBefore('%') ?: "0.0.0.0"
-        uri = "rtsp://$localIp/$sid"
+        DiagLog.d("AP2", "開始 AirPlay 2 連線：${rx.name}（型號 ${rx.model}，${rx.host}:${rx.port}，et=${rx.et}，pw=${rx.password}）")
+        probeInfo()
+        openConnection()
 
         audioSock = DatagramSocket(0)
         controlSock = DatagramSocket(0)
@@ -122,7 +119,9 @@ class Ap2Session(private val rx: Receiver) : CastSession {
             "statsCollectionEnabled" to false,
         )
         val r1 = rtsp("SETUP", uri, plistHdr, BPlist.encode(p1))
-        (decodeMap(r1.body)["eventPort"] as? Long)?.let { srvEvent = it.toInt() }
+        val m1 = decodeMap(r1.body)
+        DiagLog.d("AP2", "SETUP(session) 回應：${describe(m1)}")
+        (m1["eventPort"] as? Long)?.let { srvEvent = it.toInt() }
 
         // SETUP 第二段：音訊串流（realtime，ALAC 44.1kHz 立體聲）
         val stream = linkedMapOf<String, Any>(
@@ -141,36 +140,64 @@ class Ap2Session(private val rx: Receiver) : CastSession {
             "streamConnectionID" to (rnd.nextInt() and 0x7fffffff).toLong(),
         )
         val r2 = rtsp("SETUP", uri, plistHdr, BPlist.encode(mapOf("streams" to listOf(stream))))
+        DiagLog.d("AP2", "SETUP(streams) 回應：${describe(decodeMap(r2.body))}")
         val st = (decodeMap(r2.body)["streams"] as? List<*>)?.firstOrNull() as? Map<*, *>
             ?: throw IOException("HomePod 沒有回傳串流資訊")
         srvAudio = (st["dataPort"] as? Long)?.toInt() ?: throw IOException("HomePod 沒有提供音訊連接埠")
         srvControl = (st["controlPort"] as? Long)?.toInt() ?: 0
+        DiagLog.d("AP2", "接收端連接埠：audio=$srvAudio control=$srvControl event=$srvEvent；本機 audio=${audioSock.localPort} control=${controlSock.localPort} timing=${timingSock.localPort}")
 
         startEventChannel()
 
         rtsp("RECORD", uri, mapOf("Range" to "npt=0-", "RTP-Info" to "seq=$seq;rtptime=$ts"))
+        DiagLog.d("AP2", "RECORD 完成，開始送音訊")
         startThreads()
     }
 
-    /** 以 transient HomeKit 配對取得 SRP session key。 */
+    /**
+     * 以 transient HomeKit 配對取得 SRP session key。
+     * 注意：不可先送 /pair-pin-start —— 那會讓 Apple TV 在電視上顯示配對碼，
+     * 而 transient 配對使用固定 PIN 3939，不需要螢幕配對碼。
+     */
     private fun pairTransient() {
         val hkp = mapOf("X-Apple-HKP" to "4")
-        try { http("POST", "/pair-pin-start", hkp, ByteArray(0)) } catch (_: IOException) {}
+        val hdr = hkp + ("Content-Type" to "application/octet-stream")
 
         val srp = Srp("Pair-Setup", "3939")
         var m2: Map<Int, ByteArray>? = null
-        // transient 旗標有的實作用 1 位元組、有的用 4 位元組，依序嘗試
-        for (flags in listOf(byteArrayOf(0x10), byteArrayOf(0x10, 0, 0, 0))) {
+        var lastErr: IOException? = null
+        // transient 旗標有的實作用 1 位元組、有的用 4 位元組，依序嘗試（每次都用全新連線）
+        val variants = listOf("1 位元組" to byteArrayOf(0x10), "4 位元組" to byteArrayOf(0x10, 0, 0, 0))
+        for ((idx, v) in variants.withIndex()) {
+            val (label, flags) = v
             val m1 = Tlv8.encode(
                 listOf(Tlv8.METHOD to byteArrayOf(0), Tlv8.STATE to byteArrayOf(1), Tlv8.FLAGS to flags)
             )
-            val r = http("POST", "/pair-setup", hkp + ("Content-Type" to "application/octet-stream"), m1)
-            val t = Tlv8.decode(r.body)
-            if (t[Tlv8.STATE]?.firstOrNull()?.toInt() == 2 && t.containsKey(Tlv8.PUBLIC_KEY) && t.containsKey(Tlv8.SALT)) {
-                m2 = t; break
+            val t0 = System.nanoTime()
+            try {
+                val r = http("POST", "/pair-setup", hdr, m1)
+                val t = Tlv8.decode(r.body)
+                DiagLog.d("AP2", "pair-setup M1（flags $label）→ HTTP ${r.code}，${ms(t0)} ms，${tlvSummary(t)}")
+                val err = t[Tlv8.ERROR]?.firstOrNull()?.toInt()
+                if (t[Tlv8.STATE]?.firstOrNull()?.toInt() == 2 && t.containsKey(Tlv8.PUBLIC_KEY) && t.containsKey(Tlv8.SALT)) {
+                    m2 = t
+                    break
+                }
+                lastErr = IOException(
+                    if (err != null) "配對被拒絕（${tlvErr(err)}）" else "$PAIR_HINT（HTTP ${r.code}）"
+                )
+            } catch (e: IOException) {
+                DiagLog.e("AP2", "pair-setup M1（flags $label）失敗（等待 ${ms(t0)} ms）", e)
+                lastErr = IOException(
+                    "配對沒有回應（${e.message}）。若 Apple TV 螢幕出現配對碼，代表它要求非 transient 配對", e
+                )
+            }
+            if (idx < variants.lastIndex) {
+                DiagLog.d("AP2", "重新建立連線後以另一種旗標格式重試")
+                openConnection()
             }
         }
-        val msg2 = m2 ?: throw IOException(PAIR_HINT)
+        val msg2 = m2 ?: throw (lastErr ?: IOException(PAIR_HINT))
 
         val proof = srp.computeProof(msg2[Tlv8.SALT]!!, msg2[Tlv8.PUBLIC_KEY]!!)
         val m3 = Tlv8.encode(
@@ -180,12 +207,117 @@ class Ap2Session(private val rx: Receiver) : CastSession {
                 Tlv8.PROOF to proof,
             )
         )
-        val r4 = http("POST", "/pair-setup", hkp + ("Content-Type" to "application/octet-stream"), m3)
+        val t3 = System.nanoTime()
+        val r4 = http("POST", "/pair-setup", hdr, m3)
         val t4 = Tlv8.decode(r4.body)
+        DiagLog.d("AP2", "pair-setup M3 → HTTP ${r4.code}，${ms(t3)} ms，${tlvSummary(t4)}")
         val serverProof = t4[Tlv8.PROOF]
-        if (t4.containsKey(Tlv8.ERROR) || serverProof == null) throw IOException(PAIR_HINT)
+        val err4 = t4[Tlv8.ERROR]?.firstOrNull()?.toInt()
+        if (err4 != null) throw IOException("配對被拒絕（${tlvErr(err4)}）")
+        if (serverProof == null) throw IOException("$PAIR_HINT（M4 沒有 proof）")
         if (!srp.verifyServer(serverProof)) throw IOException("配對驗證失敗（SRP 證明不符）")
         sessionKey = srp.sessionKey
+        DiagLog.d("AP2", "transient 配對成功，已建立加密通道金鑰")
+    }
+
+    private fun tlvErr(code: Int) = when (code) {
+        1 -> "未知錯誤"
+        2 -> "驗證失敗：配對碼不符"
+        3 -> "裝置要求稍後再試"
+        4 -> "已達配對裝置上限"
+        5 -> "嘗試次數過多"
+        6 -> "裝置不接受此配對方式"
+        7 -> "裝置忙碌中"
+        else -> "錯誤碼 $code"
+    }
+
+    private fun tlvSummary(t: Map<Int, ByteArray>): String {
+        val st = t[Tlv8.STATE]?.firstOrNull()?.toInt()
+        val er = t[Tlv8.ERROR]?.firstOrNull()?.toInt()
+        val keys = t.entries.joinToString(",") { "0x%02X(%dB)".format(it.key, it.value.size) }
+        return "state=${st ?: "-"} error=${er ?: "-"} TLV=[$keys]"
+    }
+
+    private fun ms(t0: Long) = (System.nanoTime() - t0) / 1_000_000
+
+    /** 建立（或重建）到接收端的 TCP 連線，並重設為未加密。 */
+    private fun openConnection() {
+        try { sock?.close() } catch (_: Exception) {}
+        val t0 = System.nanoTime()
+        val s = Socket()
+        s.connect(InetSocketAddress(addr, rx.port), 5000)
+        s.soTimeout = 8000
+        s.tcpNoDelay = true
+        sock = s
+        rawIn = BufferedInputStream(s.getInputStream())
+        rawOut = s.getOutputStream()
+        inp = rawIn
+        out = rawOut
+        localIp = s.localAddress.hostAddress?.substringBefore('%') ?: "0.0.0.0"
+        uri = "rtsp://$localIp/$sid"
+        DiagLog.d("AP2", "TCP 已連線 ${rx.host}:${rx.port}，本機 $localIp（${ms(t0)} ms）")
+    }
+
+    /** 僅在日誌開啟時：用獨立連線讀取 GET /info（功能旗標、配對需求等），純診斷用途，失敗不影響連線。 */
+    private fun probeInfo() {
+        if (!DiagLog.enabled) return
+        val t0 = System.nanoTime()
+        try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress(addr, rx.port), 3000)
+                s.soTimeout = 3000
+                s.getOutputStream().apply {
+                    write("GET /info RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: AirPlay/540.31\r\n\r\n".toByteArray())
+                    flush()
+                }
+                val i = BufferedInputStream(s.getInputStream())
+                fun line(): String? {
+                    val sb = StringBuilder()
+                    while (true) {
+                        val c = i.read()
+                        if (c < 0) return if (sb.isEmpty()) null else sb.toString()
+                        if (c == '\n'.code) break
+                        if (c != '\r'.code) sb.append(c.toChar())
+                    }
+                    return sb.toString()
+                }
+                val status = line() ?: throw IOException("沒有回應")
+                var len = 0
+                while (true) {
+                    val l = line() ?: break
+                    if (l.isEmpty()) break
+                    if (l.lowercase().startsWith("content-length:")) len = l.substringAfter(':').trim().toIntOrNull() ?: 0
+                }
+                val body = ByteArray(len)
+                var n = 0
+                while (n < len) {
+                    val r = i.read(body, n, len - n)
+                    if (r < 0) break
+                    n += r
+                }
+                DiagLog.d("AP2", "GET /info → $status（${ms(t0)} ms，$n 位元組）")
+                if (n > 0) {
+                    val m = decodeMap(body.copyOf(n))
+                    DiagLog.d("AP2", "/info 內容：${describe(m, maxDepth = 1).take(2500)}")
+                }
+            }
+        } catch (e: Exception) {
+            DiagLog.d("AP2", "GET /info 失敗（${ms(t0)} ms）：${e.javaClass.simpleName} ${e.message}")
+        }
+    }
+
+    /** 把 plist 內容轉成可讀字串（位元組陣列只記長度，不記內容）。 */
+    private fun describe(v: Any?, maxDepth: Int = 3, depth: Int = 0): String = when (v) {
+        null -> "null"
+        is ByteArray -> "<${v.size}B>"
+        is Map<*, *> ->
+            if (depth >= maxDepth) "<dict ${v.size}>"
+            else v.entries.joinToString(", ", "{", "}") { "${it.key}=${describe(it.value, maxDepth, depth + 1)}" }
+        is List<*> ->
+            if (depth >= maxDepth) "<list ${v.size}>"
+            else v.joinToString(", ", "[", "]") { describe(it, maxDepth, depth + 1) }
+        is String -> if (v.length > 60) v.take(60) + "…" else v
+        else -> v.toString()
     }
 
     // ---------------------------------------------------------------- 串流
@@ -216,6 +348,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
         seq = (seq + 1) and 0xFFFF
         ts = (ts + Alac.FRAMES_PER_PACKET) and 0xFFFFFFFFL
         nextTs = ts
+        sent++
     }
 
     override fun setVolume(volume: Float, muted: Boolean) {
@@ -229,6 +362,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
     override fun close() {
         if (closed) return
         closed = true
+        DiagLog.d("AP2", "關閉連線（共送出 $sent 個封包）")
         try {
             sock?.soTimeout = 1000
             val body = BPlist.encode(mapOf("streams" to listOf(mapOf("type" to 96L))))
@@ -254,6 +388,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
             while (!closed) {
                 try { timingSock.receive(p) } catch (_: IOException) { break }
                 if (p.length >= 32 && (buf[1].toInt() and 0x7F) == 0x52) {
+                    if (ntpReqs++ == 0) DiagLog.d("AP2", "收到第一個 NTP 時間請求（來自 ${p.address.hostAddress}:${p.port}）")
                     val rep = ByteArray(32)
                     rep[0] = 0x80.toByte(); rep[1] = 0xD3.toByte(); rep[2] = 0; rep[3] = 7
                     System.arraycopy(buf, 24, rep, 8, 8)
@@ -273,6 +408,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
                 if (p.length >= 8 && (buf[1].toInt() and 0x7F) == 0x55) {
                     val missed = get16(buf, 4)
                     val count = get16(buf, 6)
+                    if (retrans++ == 0) DiagLog.d("AP2", "收到第一個重送請求（seq=$missed，數量 $count）")
                     for (i in 0 until count) {
                         val s = (missed + i) and 0xFFFF
                         val orig = synchronized(ring) { ring[s % RING] } ?: continue
@@ -299,13 +435,20 @@ class Ap2Session(private val rx: Receiver) : CastSession {
                 put64(b, 8, ntpNow())
                 put32(b, 16, cur)
                 controlSock.send(DatagramPacket(b, b.size, addr, srvControl))
+                if (DiagLog.enabled && ++tick % 10 == 0) {
+                    DiagLog.d("AP2", "串流統計：已送 $sent 封包，NTP 請求 $ntpReqs 次，重送請求 $retrans 次")
+                }
             } catch (_: Exception) {
             }
         }, 0, 1, TimeUnit.SECONDS)
 
         // AirPlay 2 以 POST /feedback 保活
         ctl.scheduleAtFixedRate({
-            try { rtsp("POST", "/feedback") } catch (_: Exception) {}
+            try {
+                rtsp("POST", "/feedback")
+            } catch (e: Exception) {
+                if (fbErr++ < 3) DiagLog.e("AP2", "feedback 保活失敗", e)
+            }
         }, 2, 2, TimeUnit.SECONDS)
     }
 
@@ -316,6 +459,7 @@ class Ap2Session(private val rx: Receiver) : CastSession {
             try {
                 val es = Socket()
                 es.connect(InetSocketAddress(addr, srvEvent), 3000)
+                DiagLog.d("AP2", "事件通道已連線（port $srvEvent）")
                 // 事件通道的方向與控制通道相反：把它視為由接收端發起
                 val ein = SecureIn(BufferedInputStream(es.getInputStream()),
                     Crypto.hkdf(sessionKey, "Events-Salt", "Events-Write-Encryption-Key"))
@@ -332,7 +476,8 @@ class Ap2Session(private val rx: Receiver) : CastSession {
                     eout.write(String(reply).replace("CSeq: 0", "CSeq: $c").toByteArray())
                     eout.flush()
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                if (!closed) DiagLog.d("AP2", "事件通道結束：${e.javaClass.simpleName} ${e.message}")
             }
         }, "ap2-event").apply { isDaemon = true }.start()
     }
@@ -349,7 +494,10 @@ class Ap2Session(private val rx: Receiver) : CastSession {
             o.write(sb.toString().toByteArray())
             if (body.isNotEmpty()) o.write(body)
             o.flush()
-            readResponse()
+            val t0 = System.nanoTime()
+            val r = readResponse()
+            DiagLog.d("AP2", "HTTP $method $path → ${r.code}（${ms(t0)} ms，回應 ${r.body.size} 位元組）")
+            r
         }
 
     private fun rtsp(method: String, target: String, headers: Map<String, String> = emptyMap(), body: ByteArray? = null): Resp =
@@ -372,7 +520,16 @@ class Ap2Session(private val rx: Receiver) : CastSession {
         o.write(if (body != null) head + body else head)
         o.flush()
 
-        val resp = readResponse()
+        val t0 = System.nanoTime()
+        val resp = try {
+            readResponse()
+        } catch (e: IOException) {
+            DiagLog.e("AP2", "RTSP $method 讀取回應失敗（等待 ${ms(t0)} ms）", e)
+            throw e
+        }
+        if (!(target == "/feedback" && resp.code == 200)) {
+            DiagLog.d("AP2", "RTSP $method → ${resp.code}（${ms(t0)} ms，回應 ${resp.body.size} 位元組）")
+        }
         if (check && resp.code != 200) {
             throw IOException(
                 when (resp.code) {

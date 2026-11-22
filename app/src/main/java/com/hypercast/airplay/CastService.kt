@@ -90,6 +90,8 @@ class CastService : Service() {
         val data = i.getParcelableExtra<Intent>("data")
 
         AirPlayStore.update { it.copy(selected = rx, phase = Phase.Connecting, message = null) }
+        DiagLog.refreshLocation(this)
+        DiagLog.d("CAST", "要求連線：${rx.name}｜型號 ${rx.model}｜${rx.host}:${rx.port}｜et=${rx.et}｜pw=${rx.password}｜AirPlay2=${rx.ap2}")
 
         // Android 14+：必須先進入 mediaProjection 前景狀態，才能取得 MediaProjection
         startForeground(NOTIF_ID, buildNotification(AirPlayStore.state.value),
@@ -130,7 +132,9 @@ class CastService : Service() {
         try {
             val s: CastSession = if (rx.ap2) com.hypercast.airplay.ap2.Ap2Session(rx) else RaopSession(rx)
             session = s
+            val tConn = System.nanoTime()
             s.connect()
+            DiagLog.d("CAST", "接收端連線成功（${(System.nanoTime() - tConn) / 1_000_000} ms），開始擷取系統音訊")
             val st = AirPlayStore.state.value
             s.setVolume(st.volume, st.muted)
 
@@ -151,9 +155,13 @@ class CastService : Service() {
                 .build()
             recorder = rec
             rec.startRecording()
+            DiagLog.d("CAST", "AudioRecord 已啟動（狀態 ${rec.recordingState}）")
             AirPlayStore.update { it.copy(phase = Phase.Streaming) }
 
             val buf = ByteArray(Alac.FRAME_BYTES)
+            var frames = 0L
+            var peak = 0
+            var lastLog = System.nanoTime()
             while (running) {
                 var off = 0
                 while (off < buf.size && running) {
@@ -161,10 +169,30 @@ class CastService : Service() {
                     if (n < 0) throw IOException("音訊擷取失敗 ($n)")
                     off += n
                 }
-                if (running) s.sendFrame(Alac.encode(buf))
+                if (running) {
+                    s.sendFrame(Alac.encode(buf))
+                    frames++
+                    if (DiagLog.enabled) {
+                        var i = 0
+                        while (i + 1 < buf.size) {
+                            val v = Math.abs((buf[i + 1].toInt() shl 8) or (buf[i].toInt() and 0xFF))
+                            if (v > peak) peak = v
+                            i += 2
+                        }
+                        val now = System.nanoTime()
+                        if (now - lastLog > 10_000_000_000L) {
+                            DiagLog.d("CAST", "串流中：已送出 $frames 幀，近 10 秒最大振幅 $peak/32768（0 代表被擷取到的是靜音）")
+                            peak = 0
+                            lastLog = now
+                        }
+                    }
+                }
             }
         } catch (e: Exception) {
-            if (running) error = e.message ?: e.javaClass.simpleName
+            if (running) {
+                error = e.message ?: e.javaClass.simpleName
+                DiagLog.e("CAST", "連線或串流失敗：${e.javaClass.name}", e)
+            }
         } finally {
             if (running) main.post { stopCast(error ?: "串流已結束") }
         }
@@ -184,6 +212,7 @@ class CastService : Service() {
     }
 
     private fun stopCast(message: String?) {
+        DiagLog.d("CAST", "停止串流：${message ?: "使用者中斷"}")
         stopWorker()
         AirPlayStore.update {
             it.copy(

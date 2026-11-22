@@ -71,6 +71,7 @@ class RaopSession(private val rx: Receiver) : CastSession {
 
     override fun connect() {
         addr = InetAddress.getByName(rx.host)
+        DiagLog.d("RAOP", "開始 AirPlay 1（RAOP）連線：${rx.name}（型號 ${rx.model}，${rx.host}:${rx.port}，et=${rx.et}，pw=${rx.password}）")
         val s = Socket()
         s.connect(InetSocketAddress(addr, rx.port), 5000)
         s.soTimeout = 8000
@@ -269,7 +270,21 @@ class RaopSession(private val rx: Receiver) : CastSession {
         if (bytes != null) o.write(bytes)
         o.flush()
 
-        val resp = readResponse()
+        val t0 = System.nanoTime()
+        val resp = try {
+            readResponse()
+        } catch (e: IOException) {
+            DiagLog.e("RAOP", "RTSP $method 讀取回應失敗（等待 ${(System.nanoTime() - t0) / 1_000_000} ms）", e)
+            throw e
+        }
+        if (method != "OPTIONS" || resp.code != 200 || cseq <= 2) {
+            DiagLog.d(
+                "RAOP",
+                "RTSP $method → ${resp.code}（${(System.nanoTime() - t0) / 1_000_000} ms）" +
+                    (resp.headers["server"]?.let { " server=$it" } ?: "") +
+                    (resp.headers["transport"]?.let { " transport=$it" } ?: "")
+            )
+        }
         if (check && resp.code != 200) {
             throw IOException(
                 when (resp.code) {

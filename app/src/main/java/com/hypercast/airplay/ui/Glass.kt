@@ -39,8 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.Outline
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.drawOutline
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.res.painterResource
@@ -193,9 +192,9 @@ fun GlassCard(
                         start = Offset.Zero, end = Offset(size.width, size.height),
                     )
                     // 內側柔和光暈（外半圈會被裁切掉）
-                    strokeOutline(outline, rim, 0.35f, 4.dp.toPx())
+                    drawOutline(outline, rim, alpha = 0.35f, style = Stroke(width = 4.dp.toPx()))
                     // 極細邊緣線
-                    strokeOutline(outline, rim, 1f, 0.75.dp.toPx())
+                    drawOutline(outline, rim, style = Stroke(width = 0.75.dp.toPx()))
                 }
         )
         content()
@@ -247,23 +246,4 @@ fun GlassSlider(value: Float, onChange: (Float) -> Unit, modifier: Modifier = Mo
 @Composable
 fun GIcon(res: Int, tint: Color, size: Dp = 22.dp, modifier: Modifier = Modifier) {
     Image(painterResource(res), null, modifier.size(size), colorFilter = ColorFilter.tint(tint))
-}
-
-/** 沿著形狀輪廓描邊（支援圓角矩形、矩形與任意路徑）。 */
-private fun DrawScope.strokeOutline(outline: Outline, brush: Brush, alpha: Float, width: Float) {
-    val style = Stroke(width = width)
-    when (outline) {
-        is Outline.Rounded -> {
-            val r = outline.roundRect
-            drawRoundRect(
-                brush, Offset(r.left, r.top), Size(r.width, r.height),
-                r.topLeftCornerRadius, alpha, style,
-            )
-        }
-        is Outline.Rectangle -> {
-            val r = outline.rect
-            drawRect(brush, Offset(r.left, r.top), Size(r.width, r.height), alpha, style)
-        }
-        is Outline.Generic -> drawPath(outline.path, brush, alpha, style)
-    }
 }

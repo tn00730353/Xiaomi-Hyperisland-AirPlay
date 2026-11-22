@@ -7,23 +7,24 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.database.ContentObserver
 import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
-import android.media.MediaMetadata
-import android.media.VolumeProvider
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
-import android.media.session.MediaSession
-import android.media.session.PlaybackState
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.widget.RemoteViews
 import androidx.core.content.ContextCompat
 import com.hypercast.airplay.ap2.Ap2Session
@@ -74,57 +75,73 @@ class CastService : Service() {
                 setShowBadge(false)
             }
         )
-        setupMediaSession()
     }
 
-    // ------------------------------------------------------------ 系統音量鍵（MediaSession 遠端音量）
-
-    private var mediaSession: MediaSession? = null
-    private var volProvider: VolumeProvider? = null
+    // ------------------------------------------------------------ 手機音量鍵 → 接收端音量（鏡射）
 
     /**
-     * 與 Base 的 LocalVolumeSession 同類做法：建立「遠端音量」MediaSession，讓手機實體音量鍵 / 系統音量滑桿
-     * 直接調整 AirPlay 接收端的音量。這個 session 只接管音量：
-     * 不處理 play / pause / stop（系統送來的這類指令一律忽略，避免被靜音或中斷），也不掛在通知上。
+     * v1.2.6：不再建立「遠端音量」MediaSession（setPlaybackToRemote）。那種做法會讓系統把整個媒體音量
+     * （實體音量鍵、音量面板的媒體滑桿）交給 HyperCast，手機自己的媒體音量就沒辦法調了，
+     * 而且 HyperCast 會變成「目前的媒體工作階段」，耳機 / 藍牙的播放 / 暫停鍵也會被它吃掉。
+     *
+     * 改成：音量鍵照常調整手機的媒體音量；HyperCast 監聽手機媒體音量的變化，
+     * 把「變動的格數」換算成比例，同步加減到接收端音量。AudioPlaybackCapture 擷取到的是
+     * 混音前的聲音，不受手機媒體音量影響，所以兩邊可以各自獨立、互不干擾。
      */
-    private fun setupMediaSession() {
+    private var phoneVol = -1
+    private var volReceiver: BroadcastReceiver? = null
+    private var volObserver: ContentObserver? = null
+
+    private fun startVolumeMirror() {
+        stopVolumeMirror()
+        val am = getSystemService(AudioManager::class.java) ?: return
+        phoneVol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
         try {
-            val ms = MediaSession(this, "HyperCast")
-            val vp = object : VolumeProvider(VolumeProvider.VOLUME_CONTROL_ABSOLUTE, 100, (AirPlayStore.state.value.volume * 100).roundToInt()) {
-                override fun onSetVolumeTo(volume: Int) { AirPlayStore.setVolume(volume / 100f) }
-                override fun onAdjustVolume(direction: Int) {
-                    if (direction > 0) AirPlayStore.adjust(+0.05f) else if (direction < 0) AirPlayStore.adjust(-0.05f)
+            val r = object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, i: Intent?) {
+                    val type = i?.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", -1) ?: -1
+                    if (type == AudioManager.STREAM_MUSIC) onPhoneVolumeChanged()
                 }
             }
-            ms.setCallback(object : MediaSession.Callback() {})   // 空實作：忽略所有播放控制
-            ms.setPlaybackToRemote(vp)
-            mediaSession = ms
-            volProvider = vp
+            ContextCompat.registerReceiver(
+                this, r, IntentFilter("android.media.VOLUME_CHANGED_ACTION"), ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            volReceiver = r
         } catch (e: Exception) {
-            DiagLog.d("CAST", "MediaSession 建立失敗：${e.message}")
+            DiagLog.d("CAST", "音量廣播註冊失敗：${e.message}")
+        }
+        try {
+            // 備援：部分系統不會送 VOLUME_CHANGED_ACTION，改看系統設定資料庫的變動
+            val o = object : ContentObserver(main) {
+                override fun onChange(selfChange: Boolean) { onPhoneVolumeChanged() }
+            }
+            contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, o)
+            volObserver = o
+        } catch (e: Exception) {
+            DiagLog.d("CAST", "音量觀察者註冊失敗：${e.message}")
         }
     }
 
-    private fun updateMediaSession(s: UiState, active: Boolean) {
-        val ms = mediaSession ?: return
-        try {
-            volProvider?.currentVolume = if (s.muted) 0 else (s.volume * 100).roundToInt()
-            if (active) {
-                ms.setMetadata(
-                    MediaMetadata.Builder()
-                        .putString(MediaMetadata.METADATA_KEY_TITLE, targetsTitle(s))
-                        .build()
-                )
-                ms.setPlaybackState(
-                    PlaybackState.Builder()
-                        .setState(PlaybackState.STATE_PLAYING, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
-                        .build()
-                )
-            }
-            if (ms.isActive != active) ms.isActive = active
-        } catch (_: Exception) {
-        }
+    private fun stopVolumeMirror() {
+        volReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
+        volReceiver = null
+        volObserver?.let { try { contentResolver.unregisterContentObserver(it) } catch (_: Exception) {} }
+        volObserver = null
+        phoneVol = -1
     }
+
+    private fun onPhoneVolumeChanged() {
+        if (AirPlayStore.state.value.phase == Phase.Idle) return
+        val am = audioManagerOrNull() ?: return
+        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        val now = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val prev = phoneVol
+        phoneVol = now
+        if (prev < 0 || now == prev) return
+        AirPlayStore.adjust((now - prev).toFloat() / max)
+    }
+
+    private fun audioManagerOrNull(): AudioManager? = getSystemService(AudioManager::class.java)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -161,7 +178,7 @@ class CastService : Service() {
 
         // Android 14+：必須先進入 mediaProjection 前景狀態，才能取得 MediaProjection
         nm.cancel(NOTIF_ID_IDLE)
-        updateMediaSession(AirPlayStore.state.value, true)
+        startVolumeMirror()
         startForeground(NOTIF_ID, buildNotification(AirPlayStore.state.value),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
 
@@ -190,7 +207,6 @@ class CastService : Service() {
             AirPlayStore.state.collectLatest { s ->
                 delay(120)   // 滑動音量時合併更新，避免通知被系統限流
                 if (!running) return@collectLatest
-                updateMediaSession(s, true)
                 nm.notify(NOTIF_ID, buildNotification(s))
                 // 聲道分配由 UI 改狀態，這裡同步到各目標
                 s.targets.forEach { t -> slots.firstOrNull { it.rx.id == t.rx.id }?.role = t.role }
@@ -293,6 +309,7 @@ class CastService : Service() {
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
                 .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                .excludeUid(android.os.Process.myUid())   // 與 Base 相同：不擷取自己 App 的聲音
                 .build()
             val fmt = AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -384,6 +401,7 @@ class CastService : Service() {
 
     private fun stopWorker() {
         running = false
+        stopVolumeMirror()
         notifJob?.cancel()
         try { recorder?.stop() } catch (_: Exception) {}
         try { recorder?.release() } catch (_: Exception) {}
@@ -400,7 +418,6 @@ class CastService : Service() {
     private fun stopCast(message: String?) {
         DiagLog.d("CAST", "停止串流：${message ?: "使用者中斷"}")
         stopWorker()
-        try { mediaSession?.isActive = false } catch (_: Exception) {}
         AirPlayStore.update {
             it.copy(
                 playing = false,
@@ -418,8 +435,6 @@ class CastService : Service() {
 
     override fun onDestroy() {
         stopWorker()
-        try { mediaSession?.release() } catch (_: Exception) {}
-        mediaSession = null
         scope.cancel()
         super.onDestroy()
     }

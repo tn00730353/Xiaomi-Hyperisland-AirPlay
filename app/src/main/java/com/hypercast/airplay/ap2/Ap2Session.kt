@@ -92,6 +92,7 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
         audioSock = DatagramSocket(0)
         controlSock = DatagramSocket(0)
         timingSock = DatagramSocket(0)
+        startTiming()
 
         // 與 Base 相同：配對前先在同一條連線取一次 /info（pairing-info）
         try {
@@ -445,7 +446,11 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
 
     // ---------------------------------------------------------------- 背景工作
 
-    private fun startThreads() {
+    /**
+     * NTP 時間同步回應（0xD2 → 0xD3）。必須在 SETUP 之前就開始跑：接收端會在 SETUP 期間探測我們的 timing 埠，
+     * 沒有回應就不會回覆串流 SETUP（Sound Pro 逾時的原因；Base 也有「session setup 完成前就收到 timing 請求」的處理）。
+     */
+    private fun startTiming() {
         // NTP 時間同步 (0x52 → 0x53)
         Thread({
             val buf = ByteArray(64)
@@ -463,6 +468,9 @@ class Ap2Session(private val rx: Receiver, private val allowPin: Boolean = true)
                 }
             }
         }, "ap2-timing").apply { isDaemon = true }.start()
+    }
+
+    private fun startThreads() {
 
         // 控制通道：重送請求 (0x55 → 0x56)
         Thread({

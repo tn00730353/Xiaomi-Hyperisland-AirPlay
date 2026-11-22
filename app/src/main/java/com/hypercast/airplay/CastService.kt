@@ -131,10 +131,12 @@ class CastService : Service() {
         var error: String? = null
         try {
             val s: CastSession = if (!rx.ap2) RaopSession(rx) else {
-                val members = if (rx.groupId.isBlank()) emptyList() else
-                    AirPlayStore.state.value.receivers.filter {
-                        it.ap2 && it.groupId == rx.groupId && it.id != rx.id && !it.model.startsWith("AppleTV")
-                    }
+                fun gk(r: Receiver) = r.groupId.uppercase().take(8)
+                val all = AirPlayStore.state.value.receivers
+                DiagLog.d("CAST", "組合比對：選擇 ${rx.name}（群組 ${gk(rx).ifBlank { "無" }}）；候選 " +
+                    all.joinToString { "${it.name}[${it.model}|${gk(it).ifBlank { "無" }}|ap2=${it.ap2}]" })
+                val members = if (gk(rx).isBlank()) emptyList() else
+                    all.filter { it.ap2 && gk(it) == gk(rx) && it.id != rx.id && !it.model.startsWith("AppleTV") }
                 if (members.isEmpty()) com.hypercast.airplay.ap2.Ap2Session(rx) else GroupSession(rx, members)
             }
             session = s

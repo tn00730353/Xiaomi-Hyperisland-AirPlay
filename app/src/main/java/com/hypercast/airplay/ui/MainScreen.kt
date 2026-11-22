@@ -2,6 +2,7 @@
 package com.hypercast.airplay.ui
 
 import android.app.Activity
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -9,7 +10,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,11 +30,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -43,20 +49,19 @@ import com.hypercast.airplay.BuildConfig
 import com.hypercast.airplay.DeviceItem
 import com.hypercast.airplay.Phase
 import com.hypercast.airplay.PodKind
+import com.hypercast.airplay.R
 import com.hypercast.airplay.Receiver
+import com.hypercast.airplay.SystemInfo
 import com.hypercast.airplay.UiState
 import com.hypercast.airplay.buildItems
 import com.hypercast.airplay.podKind
 import kotlin.math.PI
 import kotlin.math.roundToInt
 
-// © DylanLiao — HyperCast
-
 @Composable
 fun MainScreen(
     state: UiState,
     theme: AppTheme,
-    hyperIslandOn: Boolean,
     onTheme: (AppTheme) -> Unit,
     onConnect: (Receiver) -> Unit,
     onDisconnect: () -> Unit,
@@ -64,6 +69,7 @@ fun MainScreen(
     onMute: () -> Unit,
 ) {
     val palette = paletteFor(theme)
+    var showSettings by rememberSaveable { mutableStateOf(false) }
     val t = rememberInfiniteTransition(label = "scene").animateFloat(
         initialValue = 0f,
         targetValue = (2 * PI).toFloat(),
@@ -71,7 +77,6 @@ fun MainScreen(
         label = "t",
     )
 
-    // 狀態列 / 導覽列圖示顏色跟著外觀切換
     val view = LocalView.current
     SideEffect {
         (view.context as? Activity)?.window?.let { w ->
@@ -80,6 +85,7 @@ fun MainScreen(
             c.isAppearanceLightNavigationBars = !palette.dark
         }
     }
+    BackHandler(enabled = showSettings) { showSettings = false }
 
     CompositionLocalProvider(
         LocalSceneTime provides t,
@@ -97,17 +103,20 @@ fun MainScreen(
                     .padding(horizontal = 20.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
-                Column {
-                    GText("HyperCast", 38, FontWeight.Bold)
-                    GText("把 Android 的聲音串流到 AirPlay 裝置", 14, secondary = true)
+                if (showSettings) {
+                    SettingsPage(theme, onTheme) { showSettings = false }
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            GText("HyperCast", 38, FontWeight.Bold)
+                            GText("把 Android 的聲音串流到 AirPlay 裝置", 14, secondary = true)
+                        }
+                        CircleButton(R.drawable.ic_settings) { showSettings = true }
+                    }
+                    NowPlaying(state, onDisconnect, onVolume, onMute)
+                    GText("我的裝置", 24, FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+                    Devices(state, onConnect)
                 }
-
-                ThemePicker(theme, onTheme)
-                NowPlaying(state, hyperIslandOn, onDisconnect, onVolume, onMute)
-
-                GText("我的裝置", 24, FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
-                Devices(state, onConnect)
-
                 Spacer(Modifier.height(6.dp))
                 GText(
                     "Designed & developed by ${BuildConfig.DEVELOPER}",
@@ -119,21 +128,97 @@ fun MainScreen(
     }
 }
 
+// ---------------------------------------------------------------- 設定頁
+
 @Composable
-private fun ThemePicker(current: AppTheme, onPick: (AppTheme) -> Unit) {
+private fun SettingsPage(theme: AppTheme, onTheme: (AppTheme) -> Unit, onBack: () -> Unit) {
     val p = LocalPalette.current
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-        AppTheme.values().forEach { t ->
-            val sel = t == current
-            GlassCard(Modifier.weight(1f).height(46.dp), radius = 23.dp, onClick = { onPick(t) }) {
-                Box(
+    val ctx = LocalContext.current
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        CircleButton(R.drawable.ic_back, onClick = onBack)
+        Spacer(Modifier.width(14.dp))
+        GText("設定", 32, FontWeight.Bold)
+    }
+
+    GText("外觀", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            val all = AppTheme.values()
+            all.forEachIndexed { i, t ->
+                val desc = when (t) {
+                    AppTheme.Iridescent -> "柔和的微彩色流動光斑"
+                    AppTheme.White -> "純白背景"
+                    AppTheme.Black -> "純黑背景"
+                }
+                Row(
                     Modifier
-                        .matchParentSize()
-                        .then(if (sel) Modifier.background(p.accent.copy(alpha = 0.16f)) else Modifier)
-                        .then(if (sel) Modifier.border(1.5.dp, p.accent.copy(alpha = 0.85f), RoundedCornerShape(23.dp)) else Modifier),
-                    contentAlignment = Alignment.Center,
-                ) { GText(t.label, 15, if (sel) FontWeight.Bold else FontWeight.Medium) }
+                        .fillMaxWidth()
+                        .clickableNoRipple { onTheme(t) }
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        GText(t.label, 17, FontWeight.SemiBold)
+                        GText(desc, 12, secondary = true)
+                    }
+                    if (t == theme) GIcon(R.drawable.ic_check, p.accent, 22.dp)
+                }
+                if (i < all.size - 1) Divider()
             }
+        }
+    }
+
+    GText("系統", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            val rows = SystemInfo.rows(ctx)
+            rows.forEachIndexed { i, (k, v) ->
+                InfoRow(k, v)
+                if (i < rows.size - 1) Divider()
+            }
+        }
+    }
+
+    GText("HyperIsland", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            InfoRow("狀態", SystemInfo.hyperIslandStatus(ctx))
+            Divider()
+            GText(
+                "若尚未允許：系統設定 → 通知與控制中心 → HyperCast，開啟「焦點通知 / 超級島」。",
+                12, secondary = true, modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.Top) {
+        GText(label, 15, secondary = true, modifier = Modifier.width(96.dp))
+        GText(value, 15, FontWeight.Medium, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun Divider() {
+    val p = LocalPalette.current
+    Box(Modifier.fillMaxWidth().padding(horizontal = 18.dp).height(0.5.dp).background(p.text2.copy(alpha = 0.25f)))
+}
+
+private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier =
+    this.clickable(onClick = onClick)
+
+// ---------------------------------------------------------------- 主頁元件
+
+/** 圓形玻璃圖示按鈕。 */
+@Composable
+private fun CircleButton(icon: Int, size: Int = 46, onClick: () -> Unit) {
+    val p = LocalPalette.current
+    GlassCard(Modifier.size(size.dp), radius = (size / 2).dp, onClick = onClick) {
+        Box(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
+            GIcon(icon, p.text, 22.dp)
         }
     }
 }
@@ -142,7 +227,6 @@ private fun ThemePicker(current: AppTheme, onPick: (AppTheme) -> Unit) {
 @Composable
 private fun NowPlaying(
     state: UiState,
-    hyperIslandOn: Boolean,
     onDisconnect: () -> Unit,
     onVolume: (Float) -> Unit,
     onMute: () -> Unit,
@@ -166,17 +250,16 @@ private fun NowPlaying(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // 封面：串流時為流動幻彩，閒置為柔和灰
                 val art = if (streaming) {
                     val a = t.value * 57.29578f
                     Brush.linearGradient(
-                        listOf(Color.hsv(a % 360f, 0.55f, 1f), Color.hsv((a + 120f) % 360f, 0.55f, 1f), Color.hsv((a + 240f) % 360f, 0.55f, 1f))
+                        listOf(Color.hsv(a % 360f, 0.5f, 1f), Color.hsv((a + 120f) % 360f, 0.5f, 1f), Color.hsv((a + 240f) % 360f, 0.5f, 1f))
                     )
                 } else Brush.linearGradient(listOf(p.chip, p.track))
                 Box(
-                    Modifier.size(88.dp).clip(RoundedCornerShape(22.dp)).background(art),
+                    Modifier.size(84.dp).clip(RoundedCornerShape(22.dp)).background(art),
                     contentAlignment = Alignment.Center,
-                ) { GText("♪", 34, FontWeight.Bold, alpha = if (streaming) 0.9f else 0.5f) }
+                ) { GIcon(R.drawable.ic_music, if (streaming) Color.White else p.text2, 34.dp) }
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
                     GText(title, 22, FontWeight.Bold)
@@ -191,39 +274,27 @@ private fun NowPlaying(
 
             val pct = if (state.muted) 0 else (state.volume * 100).roundToInt()
             Row(verticalAlignment = Alignment.CenterVertically) {
-                GText("🔈", 16)
+                GIcon(R.drawable.ic_vol_down, p.text2, 20.dp)
                 GlassSlider(if (state.muted) 0f else state.volume, onVolume, Modifier.weight(1f).padding(horizontal = 8.dp))
-                GText("🔊", 16)
+                GIcon(R.drawable.ic_vol_up, p.text2, 20.dp)
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                GText(if (state.muted) "靜音" else "音量 $pct%", 13, FontWeight.SemiBold, secondary = true)
-                Spacer(Modifier.weight(1f))
-                GText(if (hyperIslandOn) "HyperIsland ✓" else "HyperIsland —", 12, secondary = true)
-            }
+            GText(if (state.muted) "靜音" else "音量 $pct%", 13, FontWeight.SemiBold, secondary = true)
 
             Row(
                 horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterHorizontally),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                RoundButton(if (state.muted) "🔇" else "🔈", null, onMute)
-                RoundButton("■", p.accent, onDisconnect)
+                CircleButton(if (state.muted) R.drawable.ic_vol_off else R.drawable.ic_vol_up, 58, onMute)
+                GlassCard(Modifier.size(58.dp), radius = 29.dp, onClick = onDisconnect) {
+                    Box(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
+                        Box(Modifier.size(20.dp).clip(RoundedCornerShape(6.dp)).background(p.accent))
+                    }
+                }
             }
         }
     }
 }
 
-@Composable
-private fun RoundButton(label: String, tint: Color?, onClick: () -> Unit) {
-    GlassCard(Modifier.size(60.dp), radius = 30.dp, onClick = onClick) {
-        Box(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
-            if (tint != null) {
-                Box(Modifier.size(22.dp).clip(RoundedCornerShape(6.dp)).background(tint))
-            } else GText(label, 22)
-        }
-    }
-}
-
-/** 依序排列裝置：每列最多兩顆，立體聲組獨佔一列。 */
 @Composable
 private fun Devices(state: UiState, onConnect: (Receiver) -> Unit) {
     val items = buildItems(state.receivers)
@@ -236,36 +307,12 @@ private fun Devices(state: UiState, onConnect: (Receiver) -> Unit) {
         }
         return
     }
-    val rows = ArrayList<List<DeviceItem>>()
-    var cur = ArrayList<DeviceItem>()
-    for (d in items) {
-        val wide = d.pair || d.primary.isGenericDevice()
-        if (wide) {
-            if (cur.isNotEmpty()) { rows.add(cur); cur = ArrayList() }
-            rows.add(listOf(d))
-        } else {
-            cur.add(d)
-            if (cur.size == 2) { rows.add(cur); cur = ArrayList() }
-        }
-    }
-    if (cur.isNotEmpty()) rows.add(cur)
-
-    Column(verticalArrangement = Arrangement.spacedBy(20.dp), modifier = Modifier.fillMaxWidth()) {
-        for (row in rows) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.Top,
-            ) {
-                for (d in row) {
-                    val active = state.selected?.id == d.primary.id && state.phase != Phase.Idle && state.phase != Phase.Error
-                    DeviceTile(d, active, state.phase) {
-                        if (state.phase != Phase.Connecting) onConnect(d.primary)
-                    }
-                }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+        for (d in items) {
+            val active = state.selected?.id == d.primary.id && state.phase != Phase.Idle && state.phase != Phase.Error
+            DeviceRow(d, active, state.phase) {
+                if (state.phase != Phase.Connecting) onConnect(d.primary)
             }
         }
     }
 }
-
-private fun Receiver.isGenericDevice() = podKind == PodKind.Generic

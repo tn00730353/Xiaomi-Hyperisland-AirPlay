@@ -38,6 +38,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -151,7 +155,8 @@ fun GlassCard(
             .clip(sh)
             .then(clickMod)
     ) {
-        Box(Modifier.matchParentSize().blur(26.dp)) {
+        // 1) 高斯模糊的背景（折射來源）
+        Box(Modifier.matchParentSize().blur(18.dp)) {
             Box(
                 Modifier
                     .wrapContentSize(Alignment.TopStart, unbounded = true)
@@ -159,24 +164,37 @@ fun GlassCard(
                     .offset { IntOffset(-pos.x, -pos.y) }
             ) { GlassScene() }
         }
+        // 2) 薄薄的色調、頂部高光、邊緣折光
         Box(
             Modifier
                 .matchParentSize()
                 .background(Brush.linearGradient(listOf(p.fillA, p.fillB)))
                 .drawBehind {
+                    // 頂部鏡面高光
                     drawRect(
-                        Brush.radialGradient(
+                        Brush.verticalGradient(
                             listOf(p.highlight, Color.Transparent),
-                            center = Offset(size.width * 0.12f, 0f),
-                            radius = size.width * 0.9f,
+                            startY = 0f, endY = size.height * 0.45f,
                         )
                     )
+                    // 左上角柔光
+                    drawRect(
+                        Brush.radialGradient(
+                            listOf(p.highlight.copy(alpha = p.highlight.alpha * 0.8f), Color.Transparent),
+                            center = Offset(size.width * 0.1f, 0f),
+                            radius = size.width * 0.7f,
+                        )
+                    )
+                    val outline = sh.createOutline(size, layoutDirection, this)
+                    val rim = Brush.linearGradient(
+                        listOf(p.borderA, p.borderB, p.borderA.copy(alpha = p.borderA.alpha * 0.45f)),
+                        start = Offset.Zero, end = Offset(size.width, size.height),
+                    )
+                    // 內側柔和光暈（外半圈會被裁切掉）
+                    drawOutline(outline, rim, alpha = 0.35f, style = Stroke(width = 4.dp.toPx()))
+                    // 極細邊緣線
+                    drawOutline(outline, rim, style = Stroke(width = 0.75.dp.toPx()))
                 }
-                .border(
-                    1.dp,
-                    Brush.linearGradient(listOf(p.borderA, p.borderB, p.borderA.copy(alpha = p.borderA.alpha * 0.5f))),
-                    sh,
-                )
         )
         content()
     }
@@ -221,4 +239,10 @@ fun GlassSlider(value: Float, onChange: (Float) -> Unit, modifier: Modifier = Mo
                 .border(1.dp, Color(0x33000000), CircleShape)
         )
     }
+}
+
+/** 向量圖示（以色彩著色）。 */
+@Composable
+fun GIcon(res: Int, tint: Color, size: Dp = 22.dp, modifier: Modifier = Modifier) {
+    Image(painterResource(res), null, modifier.size(size), colorFilter = ColorFilter.tint(tint))
 }

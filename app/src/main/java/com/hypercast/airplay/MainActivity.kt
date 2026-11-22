@@ -69,7 +69,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         discovery = RaopDiscovery(this)
-        val island = HyperIsland.isSupported(this) && HyperIsland.canShow(this)
 
         android.util.Log.i("HyperCast", "Developed by ${BuildConfig.DEVELOPER}")
         var theme by mutableStateOf(ThemeStore.load(this))
@@ -80,7 +79,6 @@ class MainActivity : ComponentActivity() {
                 state = state,
                 theme = theme,
                 onTheme = { t: AppTheme -> theme = t; ThemeStore.save(this, t) },
-                hyperIslandOn = island,
                 onConnect = ::connect,
                 onDisconnect = { CastService.stop(this) },
                 onVolume = AirPlayStore::setVolume,

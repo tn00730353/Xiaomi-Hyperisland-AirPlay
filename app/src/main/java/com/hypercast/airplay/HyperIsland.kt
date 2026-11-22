@@ -73,8 +73,14 @@ object HyperIsland {
     private val DANGER = Color.parseColor("#FF5C7A")
     private val OK = Color.parseColor("#7FE3C0")
 
+    /**
+     * 焦點通知 JSON 欄位未經實機驗證，格式錯誤會讓 SystemUI 重整，因此預設關閉。
+     * 音量控制改由標準 MediaStyle + MediaSession 提供（HyperOS 自行處理超級島）。
+     */
+    const val ENABLED = false
+
     fun apply(ctx: Context, builder: Notification.Builder, info: Info) {
-        if (!isSupported(ctx)) return
+        if (!ENABLED || !isSupported(ctx)) return
         try {
             val extras = Bundle()
             extras.putString(KEY_PARAM, buildParamJson(info))

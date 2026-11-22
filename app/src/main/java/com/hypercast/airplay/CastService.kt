@@ -188,16 +188,22 @@ class CastService : Service() {
     }
 
     private var notifJob: kotlinx.coroutines.Job? = null
+    private var lastNotifKey = ""
 
     /** 狀態改變時更新通知（含音量、聲道），並把音量送到每一台接收端。 */
     private fun launchNotificationLoop() {
         notifJob?.cancel()
+        lastNotifKey = ""
         notifJob = scope.launch {
             AirPlayStore.state.collectLatest { s ->
-                delay(120)   // 滑動音量時合併更新，避免通知被系統限流
+                delay(500)   // 滑動音量時合併更新，避免通知被系統限流
                 if (!running) return@collectLatest
                 updateMediaSession(s, true)
-                nm.notify(NOTIF_ID, buildNotification(s))
+                val key = "${s.phase}|${targetsTitle(s)}|${streamingSubtitle(s)}|${if (s.muted) 0 else (s.volume * 100).roundToInt()}"
+                if (key != lastNotifKey) {      // 內容沒變就不重發，避免系統介面被一直刷新
+                    lastNotifKey = key
+                    nm.notify(NOTIF_ID, buildNotification(s))
+                }
                 // 聲道分配由 UI 改狀態，這裡同步到各目標
                 s.targets.forEach { t -> slots.firstOrNull { it.rx.id == t.rx.id }?.role = t.role }
                 slots.forEach { if (it.live) it.session?.setVolume(s.volume, s.muted) }
@@ -452,15 +458,6 @@ class CastService : Service() {
         val pct = if (s.muted) 0 else (s.volume * 100).roundToInt()
         val volTxt = if (s.muted) "靜音" else "$pct%"
 
-        val rv = RemoteViews(packageName, R.layout.notif_glass).apply {
-            setTextViewText(R.id.n_title, title)
-            setTextViewText(R.id.n_sub, "$sub · $volTxt")
-            setProgressBar(R.id.n_vol, 100, pct, false)
-            setOnClickPendingIntent(R.id.n_down, pi(ACTION_VOL_DOWN))
-            setOnClickPendingIntent(R.id.n_up, pi(ACTION_VOL_UP))
-            setOnClickPendingIntent(R.id.n_mute, pi(ACTION_MUTE))
-        }
-
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -477,12 +474,12 @@ class CastService : Service() {
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_TRANSPORT)
             .setStyle(
-                Notification.DecoratedMediaCustomViewStyle().apply {
+                // 標準 MediaStyle：HyperOS 自己會把它顯示成媒體控制 / 超級島，不需要自訂 RemoteViews
+                Notification.MediaStyle().apply {
                     mediaSession?.let { setMediaSession(it.sessionToken) }
                     setShowActionsInCompactView(0, 1, 2)
                 }
             )
-            .setCustomContentView(rv)
             .setContentIntent(open)
             .apply {
                 if (android.os.Build.VERSION.SDK_INT >= 31) {

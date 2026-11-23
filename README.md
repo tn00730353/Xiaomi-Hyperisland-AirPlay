@@ -1,4 +1,4 @@
-# HyperCast v1.2.8
+# HyperCast v1.2.9
 
 © DylanLiao — 開發者浮水印：所有原始碼檔案開頭、BuildConfig.DEVELOPER、Manifest meta-data 與畫面底部皆標示。
 
@@ -40,6 +40,14 @@ HomePod 會自動走 AirPlay 2。立體聲組不再經過 Apple TV 或個別連�
 ## 裝置分組（v1.2.2，對照 Base 修正）
 - 只有 HomePod 會被分組（分組鍵 tsid → gid → pgid）；Apple TV、其他喇叭、Mac 一律單獨一台，不再被併進 HomePod 群組，也不再被當成「組內主機」。
 - 同組 ≥ 2 顆 HomePod 時，清單多一個「HomePod 組合」項目，連線時直連每一顆 HomePod（transient 配對，免配對碼），不經過 Apple TV。
+
+## v1.2.9
+- **HyperIsland 不再擋住其他通知**：以前島會一直掛著（小米文件：沒設定消失時間時島預設 1 小時、通知卡片 12 小時），其他 App 的島 / 通知被擠到後面。現在預設「短暫顯示」：只在連線狀態或音量改變時彈出約 6 秒（`islandTimeout`）就收起，其餘時間只剩一般通知。設定 → HyperIsland 可改成「關閉」或「持續顯示」（持續顯示時用低優先級 `islandPriority=2`）。HyperOS 2（協定 1）的焦點通知會常駐狀態列，只有「持續顯示」才會使用。
+- **換歌忽大忽小**：實機行為還沒有確切定論，這版做了三件事。
+  1. 新增「同步手機音量鍵」開關（設定 → 音訊，預設開）。可以關掉來確認是不是有程式在換歌時改了手機音量，連帶改到接收端音量。每次同步都會寫進日誌（`VOL` 類別）。
+  2. 接收端音量只在「音量 / 靜音真的改變」時才送出；以前每次狀態更新（例如開始 / 停止播放）都會重送一次。
+  3. 新增「音量平衡」（預設關）：慢速自動增益（目標 −16 dBFS，增益 −12 ~ +9 dB）加軟限幅，把不同歌曲的整體響度拉近。
+  - 日誌新增 `LVL`：約每秒統計響度，兩次相差 ≥ 6 dB 就記一筆（含當時的接收端音量），可用來判斷是歌本身大小聲，還是音量被改。
 
 ## v1.2.8：RECORD 流程對齊 Base
 - 對照 Base 的原生程式：AirPlay 2 的順序是 **session SETUP → 事件通道 → RECORD → stream SETUP**，Base 完全不看 `skipRecord`，一律送 RECORD（不帶 Range / RTP-Info），回傳非 200 也繼續。

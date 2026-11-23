@@ -166,6 +166,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         DiagLog.init(this)
         VolumeStore.init(this)
+        PrefsStore.init(this)
         AirPlayStore.update { it.copy(volume = VolumeStore.load()) }
         discovery = RaopDiscovery(this)
 

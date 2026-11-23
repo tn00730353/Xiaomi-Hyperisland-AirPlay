@@ -18,6 +18,13 @@ import org.json.JSONObject
  *   - miui.focus.param : JSON（island 摘要、展開內容、音量進度）
  *   - miui.focus.pics  : Bundle<Icon>，JSON 以 "miui.focus.pic_xxx" 引用
  * 非小米裝置或未開啟焦點通知權限時，這些 extras 會被系統忽略，通知仍以一般方式顯示。
+ *
+ * v1.2.9：不再「永遠佔著島」。
+ *  - 短暫顯示（預設）：islandTimeout = 6 秒，而且只在狀態 / 音量改變時才附上焦點參數（由 CastService 決定），
+ *    其餘時間只剩一般通知。小米文件：沒設定消失時間時，島預設 1 小時才消失、通知卡片 12 小時，期間其他 App
+ *    的島 / 通知會被擠到後面。
+ *  - 持續顯示：islandPriority = 2（低優先級），讓其他 App 的島優先。
+ *  - HyperOS 2（協定 1）的焦點通知會常駐狀態列，只有選「持續顯示」才使用。
  */
 object HyperIsland {
     private const val KEY_PARAM = "miui.focus.param"
@@ -53,14 +60,19 @@ object HyperIsland {
         val muted: Boolean,
     )
 
+    /** 短暫顯示時島停留的秒數；CastService 以此決定「同樣內容還要不要繼續附上焦點參數」。 */
+    const val BRIEF_SECONDS = 6
+
     private val ACCENT = Color.parseColor("#B79CFF")
     private val OK = Color.parseColor("#7FE3C0")
 
-    fun apply(ctx: Context, builder: Notification.Builder, info: Info) {
+    /** @param brief true = 短暫顯示（島自動收起）；false = 持續顯示。 */
+    fun apply(ctx: Context, builder: Notification.Builder, info: Info, brief: Boolean) {
         if (!isSupported(ctx)) return
+        if (protocol(ctx) < 3 && brief) return      // HyperOS 2 的焦點通知會常駐狀態列，只有「持續顯示」才使用
         try {
             val extras = Bundle()
-            extras.putString(KEY_PARAM, buildParamJson(info))
+            extras.putString(KEY_PARAM, buildParamJson(info, brief))
             extras.putBundle(KEY_PICS, Bundle().apply {
                 putParcelable("miui.focus.pic_ticker", GlassIcons.glass(ctx, info.iconRes))
                 putParcelable("miui.focus.pic_icon", GlassIcons.glass(ctx, info.iconRes, base = ACCENT))
@@ -85,13 +97,15 @@ object HyperIsland {
         Mode.Idle -> "已中斷"
     }
 
-    private fun buildParamJson(i: Info): String {
+    private fun buildParamJson(i: Info, brief: Boolean): String {
         val vol = if (i.muted) "靜音" else "${i.volumePct}%"
         val status = statusText(i.mode)
         val live = i.mode == Mode.Connected || i.mode == Mode.Playing
 
         val island = JSONObject().apply {
             put("islandProperty", 1)
+            if (brief) put("islandTimeout", BRIEF_SECONDS)   // 幾秒後島自動收起，不會一直佔著
+            else put("islandPriority", 2)                    // 低優先級：讓其他 App 的島優先
             put("highlightColor", hex(if (i.mode == Mode.Idle) OK else ACCENT))
             put("bigIslandArea", JSONObject().apply {
                 put("imageTextInfoLeft", JSONObject().apply {

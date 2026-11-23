@@ -66,6 +66,8 @@ import com.hypercast.airplay.ChannelMode
 import com.hypercast.airplay.Role
 import com.hypercast.airplay.DeviceItem
 import com.hypercast.airplay.DelayStore
+import com.hypercast.airplay.IslandMode
+import com.hypercast.airplay.PrefsStore
 import com.hypercast.airplay.DiagLog
 import com.hypercast.airplay.Phase
 import com.hypercast.airplay.PodKind
@@ -185,6 +187,7 @@ private fun SettingsPage(
     val p = LocalPalette.current
     val ctx = LocalContext.current
     var showConsent by rememberSaveable { mutableStateOf(false) }
+    val prefs by PrefsStore.state.collectAsState()
 
     Row(verticalAlignment = Alignment.CenterVertically) {
         CircleButton(R.drawable.ic_back, onClick = onBack)
@@ -293,13 +296,72 @@ private fun SettingsPage(
         )
     }
 
+    GText("音訊", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { PrefsStore.setMirrorVolume(ctx, !prefs.mirrorVolume) }
+                    .padding(horizontal = 18.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    GText("同步手機音量鍵", 17, FontWeight.SemiBold)
+                    GText(
+                        "按手機音量鍵時，接收端音量一起加減。若換歌時音量忽大忽小，可先關掉這個試試（有些播放器 / 系統功能會自己改手機音量）",
+                        12, secondary = true,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                GlassToggle(prefs.mirrorVolume)
+            }
+            Divider()
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { PrefsStore.setLeveler(ctx, !prefs.leveler) }
+                    .padding(horizontal = 18.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    GText("音量平衡", 17, FontWeight.SemiBold)
+                    GText(
+                        "把不同歌曲的整體響度拉到接近，並避免加大後爆音。有些歌本來就錄得比較大聲或小聲，開啟後換歌差距會變小（會輕微改變原始動態）",
+                        12, secondary = true,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                GlassToggle(prefs.leveler)
+            }
+        }
+    }
+
     GText("HyperIsland", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
     GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
         Column {
+            val modes = IslandMode.values()
+            modes.forEachIndexed { i, mode ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickableNoRipple { PrefsStore.setIsland(ctx, mode) }
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        GText(mode.label, 17, FontWeight.SemiBold)
+                        GText(mode.desc, 12, secondary = true)
+                    }
+                    if (mode == prefs.island) GIcon(R.drawable.ic_check, p.accent, 22.dp)
+                }
+                Divider()
+            }
             InfoRow("狀態", SystemInfo.hyperIslandStatus(ctx))
             Divider()
             GText(
-                "若尚未允許：系統設定 → 通知與控制中心 → HyperCast，開啟「焦點通知 / 超級島」。",
+                "若尚未允許：系統設定 → 通知與控制中心 → HyperCast，開啟「焦點通知 / 超級島」。\n" +
+                    "若其他 App 的通知在島上顯示不出來，請選「短暫顯示」或「關閉」。",
                 12, secondary = true, modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
             )
         }

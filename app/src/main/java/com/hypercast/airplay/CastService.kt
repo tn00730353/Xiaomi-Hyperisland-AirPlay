@@ -24,6 +24,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.widget.RemoteViews
 import androidx.core.content.ContextCompat
@@ -34,6 +35,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
@@ -53,6 +55,8 @@ class CastService : Service() {
     private class Slot(val rx: Receiver, @Volatile var role: Role, val pair: Boolean) {
         @Volatile var session: CastSession? = null
         @Volatile var live = false
+        @Volatile var sentVol = -1f          // 上一次送給接收端的音量 / 靜音，沒變就不重送
+        @Volatile var sentMuted = false
     }
 
     @Volatile private var running = false
@@ -67,6 +71,7 @@ class CastService : Service() {
         super.onCreate()
         com.hypercast.airplay.ap2.HapStore.init(this)
         VolumeStore.init(this)
+        PrefsStore.init(this)
         nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CH, "AirPlay 串流狀態", NotificationManager.IMPORTANCE_DEFAULT).apply {
@@ -136,9 +141,16 @@ class CastService : Service() {
         val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
         val now = am.getStreamVolume(AudioManager.STREAM_MUSIC)
         val prev = phoneVol
-        phoneVol = now
+        phoneVol = now                       // 即使關閉同步也持續記錄，之後開啟才不會跳一大段
         if (prev < 0 || now == prev) return
+        val before = AirPlayStore.state.value.volume
+        if (!PrefsStore.state.value.mirrorVolume) {
+            DiagLog.d("VOL", "手機音量 $prev→$now（/$max）：已關閉「同步手機音量鍵」，接收端音量不變")
+            return
+        }
         AirPlayStore.adjust((now - prev).toFloat() / max)
+        // 記錄每一次同步：若「換歌時忽大忽小」是被別的程式改了手機音量而連帶改到接收端，這裡看得出來
+        DiagLog.d("VOL", "手機音量 $prev→$now（/$max）→ 接收端音量 ${(before * 100).toInt()}%→${(AirPlayStore.state.value.volume * 100).toInt()}%")
     }
 
     private fun audioManagerOrNull(): AudioManager? = getSystemService(AudioManager::class.java)
@@ -204,13 +216,20 @@ class CastService : Service() {
     private fun launchNotificationLoop() {
         notifJob?.cancel()
         notifJob = scope.launch {
-            AirPlayStore.state.collectLatest { s ->
+            // 設定（HyperIsland 顯示方式）改變時也要重送通知
+            combine(AirPlayStore.state, PrefsStore.state) { s, _ -> s }.collectLatest { s ->
                 delay(120)   // 滑動音量時合併更新，避免通知被系統限流
                 if (!running) return@collectLatest
                 nm.notify(NOTIF_ID, buildNotification(s))
                 // 聲道分配由 UI 改狀態，這裡同步到各目標
                 s.targets.forEach { t -> slots.firstOrNull { it.rx.id == t.rx.id }?.role = t.role }
-                slots.forEach { if (it.live) it.session?.setVolume(s.volume, s.muted) }
+                // 只有音量 / 靜音真的變了才送 SET_PARAMETER（以前每次狀態更新，例如「開始 / 停止播放」，都會重送一次）
+                slots.forEach {
+                    if (it.live && (it.sentVol != s.volume || it.sentMuted != s.muted)) {
+                        it.sentVol = s.volume; it.sentMuted = s.muted
+                        it.session?.setVolume(s.volume, s.muted)
+                    }
+                }
                 if (s.targets.any { it.state == TargetState.Streaming }) LastStore.save(this@CastService, s.targets)
             }
         }
@@ -238,6 +257,7 @@ class CastService : Service() {
         DiagLog.d("CAST", "「${slot.rx.name}」連線成功（${(System.nanoTime() - t0) / 1_000_000} ms）")
         val st = AirPlayStore.state.value
         s.setVolume(st.volume, st.muted)
+        slot.sentVol = st.volume; slot.sentMuted = st.muted
         slot.live = true
         AirPlayStore.setTargetState(slot.rx.id, TargetState.Streaming)
     }
@@ -331,6 +351,9 @@ class CastService : Service() {
 
             val buf = ByteArray(Alac.FRAME_BYTES)
             val mix = ByteArray(Alac.FRAME_BYTES)
+            val leveler = Leveler()
+            var levelerWasOn = false
+            var winSq = 0.0; var winN = 0; var lastWinDb = Double.NaN
             val enc = arrayOfNulls<ByteArray>(Role.values().size)
             var frames = 0L
             var lastSound = 0L
@@ -357,6 +380,14 @@ class CastService : Service() {
                 if (pk > 150) { lastSound = tNow; AirPlayStore.setPlaying(true) }
                 else if (tNow - lastSound > 3_000_000_000L) AirPlayStore.setPlaying(false)
 
+                // 音量平衡（設定中開啟時）：在編碼前處理，兩台接收端拿到同樣的結果
+                if (PrefsStore.state.value.leveler) {
+                    if (!levelerWasOn) { leveler.reset(); levelerWasOn = true; DiagLog.d("LVL", "音量平衡：開啟") }
+                    leveler.process(buf)
+                } else if (levelerWasOn) {
+                    levelerWasOn = false; DiagLog.d("LVL", "音量平衡：關閉")
+                }
+
                 enc.fill(null)
                 for (slot in slots) {
                     if (!slot.live) continue
@@ -375,6 +406,21 @@ class CastService : Service() {
                 }
                 frames++
                 if (DiagLog.enabled) {
+                    // 每約 1 秒統計一次響度；兩次相差 ≥ 6 dB 就記一筆（通常是換歌或音量被改）
+                    var k = 0
+                    while (k + 1 < buf.size) {
+                        val sv = ((buf[k + 1].toInt() shl 8) or (buf[k].toInt() and 0xFF)).toShort().toInt() / 32768.0
+                        winSq += sv * sv; winN++
+                        k += 2
+                    }
+                    if (winN >= 44100 * 2) {
+                        val db = 10.0 * Math.log10(winSq / winN + 1e-12)
+                        if (!lastWinDb.isNaN() && db > -55 && lastWinDb > -55 && Math.abs(db - lastWinDb) >= 6.0) {
+                            DiagLog.d("LVL", "響度變化 ${"%.1f".format(java.util.Locale.US, lastWinDb)}→${"%.1f".format(java.util.Locale.US, db)} dBFS" +
+                                "（平衡增益 ${"%.1f".format(java.util.Locale.US, leveler.currentGainDb)} dB，接收端音量 ${(AirPlayStore.state.value.volume * 100).toInt()}%）")
+                        }
+                        lastWinDb = db; winSq = 0.0; winN = 0
+                    }
                     var i = 0
                     while (i + 1 < buf.size) {
                         val v = Math.abs((buf[i + 1].toInt() shl 8) or (buf[i].toInt() and 0xFF))
@@ -459,6 +505,28 @@ class CastService : Service() {
         }
     }
 
+    // ---- HyperIsland：短暫顯示模式只在內容改變後的幾秒內附上焦點參數 ----
+    private var islandSig = ""
+    private var islandSigAt = 0L
+
+    /** 這次重送通知時要不要附上焦點（島）參數。 */
+    private fun islandWanted(info: HyperIsland.Info): Boolean {
+        return when (PrefsStore.state.value.island) {
+            IslandMode.Off -> false
+            IslandMode.Always -> true
+            IslandMode.Brief -> {
+                val sig = "${info.mode}|${info.name}|${info.volumePct}|${info.muted}"
+                val now = SystemClock.elapsedRealtime()
+                if (sig != islandSig) { islandSig = sig; islandSigAt = now; true }
+                else now - islandSigAt < (HyperIsland.BRIEF_SECONDS + 1) * 1000L
+            }
+        }
+    }
+
+    private fun applyIsland(b: Notification.Builder, info: HyperIsland.Info) {
+        if (islandWanted(info)) HyperIsland.apply(this, b, info, PrefsStore.state.value.island == IslandMode.Brief)
+    }
+
     private fun targetsTitle(s: UiState): String = s.targets.joinToString(" ＋ ") { it.rx.name }.ifBlank { "AirPlay" }
 
     private fun streamingSubtitle(s: UiState): String {
@@ -523,8 +591,8 @@ class CastService : Service() {
             .addAction(act(R.drawable.ic_vol_up, "音量+", ACTION_VOL_UP))
             .addAction(act(R.drawable.ic_stop, "中斷", ACTION_STOP))
 
-        HyperIsland.apply(
-            this, b,
+        applyIsland(
+            b,
             HyperIsland.Info(
                 mode = when {
                     connecting -> HyperIsland.Mode.Connecting
@@ -559,8 +627,8 @@ class CastService : Service() {
             .setOnlyAlertOnce(true)
             .setTimeoutAfter(120_000)
             .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_airplay), "連線", reconnect).build())
-        HyperIsland.apply(
-            this, b,
+        applyIsland(
+            b,
             HyperIsland.Info(
                 mode = HyperIsland.Mode.Idle, name = names,
                 iconRes = deviceIcon(last.mapNotNull { (id, _, _) -> AirPlayStore.state.value.receivers.firstOrNull { it.id == id } }),

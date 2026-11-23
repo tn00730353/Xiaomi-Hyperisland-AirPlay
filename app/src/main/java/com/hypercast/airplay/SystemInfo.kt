@@ -34,13 +34,12 @@ object SystemInfo {
         return rows
     }
 
-    /** HyperIsland（焦點通知）狀態說明。 */
+    /** HyperIsland（上島）狀態說明：使用標準媒體通知，不使用焦點通知。 */
     fun hyperIslandStatus(ctx: Context): String {
         val p = HyperIsland.protocol(ctx)
         return when {
-            p <= 0 -> "不支援（非 HyperOS，或系統版本過舊）"
-            !HyperIsland.canShow(ctx) -> "系統支援（協定 $p），但尚未允許本 App 顯示焦點通知"
-            else -> "可使用（焦點通知協定 $p）"
+            p <= 0 -> "標準媒體通知（非 HyperOS，不會有島，但通知列照常顯示控制）"
+            else -> "標準媒體通知（HyperOS 超級島協定 $p；不使用焦點通知）"
         }
     }
 }

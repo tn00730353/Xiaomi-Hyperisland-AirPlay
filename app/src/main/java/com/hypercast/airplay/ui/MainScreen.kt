@@ -401,8 +401,8 @@ private fun SettingsPage(
             InfoRow("狀態", SystemInfo.hyperIslandStatus(ctx))
             Divider()
             GText(
-                "若尚未允許：系統設定 → 通知與控制中心 → HyperCast，開啟「焦點通知 / 超級島」。\n" +
-                    "若其他 App 的通知在島上顯示不出來，請選「短暫顯示」或「關閉」。",
+                "上島使用系統的「媒體通知」：島上與通知列都會出現 音量－／靜音／音量＋／中斷。\n" +
+                    "若島上沒有出現，請確認系統設定 → 通知與控制中心 → HyperCast 已允許通知。",
                 12, secondary = true, modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
             )
         }

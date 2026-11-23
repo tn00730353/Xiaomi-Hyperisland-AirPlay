@@ -249,6 +249,10 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         discovery.start()
+        // 沒在串流時清掉本 App 殘留的通知（舊版留下的焦點通知、已中斷通知），其他 App 的通知不受影響
+        if (AirPlayStore.state.value.phase == Phase.Idle) {
+            try { getSystemService(android.app.NotificationManager::class.java).cancelAll() } catch (_: Exception) {}
+        }
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) else showIdleIsland()

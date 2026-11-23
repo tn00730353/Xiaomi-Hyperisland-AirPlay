@@ -218,7 +218,7 @@ class CastService : Service() {
         notifJob?.cancel()
         notifJob = scope.launch {
             // 設定（HyperIsland 顯示方式）改變時也要重送通知
-            lastNotifSig = ""; lastPopSig = ""
+            lastNotifSig = ""
             combine(AirPlayStore.state, PrefsStore.state) { s, _ -> s }.collectLatest { s ->
                 if (!running) return@collectLatest
                 // 聲道分配由 UI 改狀態，這裡同步到各目標
@@ -236,15 +236,8 @@ class CastService : Service() {
                 val mode = PrefsStore.state.value.island
                 val pct = if (s.muted) -1 else (s.volume * 100).roundToInt()
                 // 前景通知：只有畫面上看得到的內容變了才重送（「開始 / 停止播放」不會再觸發，除非持續顯示的島要換狀態字）
-                val sig = "${s.phase}|${targetsTitle(s)}|${streamingSubtitle(s)}|$pct|$mode|${if (mode == IslandMode.Always) s.playing else false}"
+                val sig = "${s.phase}|${targetsTitle(s)}|${streamingSubtitle(s)}|$pct|$mode"
                 if (sig != lastNotifSig) { lastNotifSig = sig; nm.notify(NOTIF_ID, buildNotification(s)) }
-                // 短暫顯示：連線 / 連上 / 音量 / 靜音改變才彈一次
-                if (mode == IslandMode.Brief && (s.phase == Phase.Connecting || s.phase == Phase.Streaming)) {
-                    val ps = "${s.phase}|${targetsTitle(s)}|$pct"
-                    if (ps != lastPopSig) { lastPopSig = ps; popIsland(s) }
-                } else if (mode != IslandMode.Brief) {
-                    main.removeCallbacks(popCancel); popCancel.run()
-                }
             }
         }
     }
@@ -489,7 +482,7 @@ class CastService : Service() {
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
         nm.cancel(NOTIF_ID)
-        main.removeCallbacks(popCancel); popCancel.run()
+        releaseMediaSession()
         // 使用者自己中斷：留下一則「已中斷 · 連線」通知，HyperIsland 上可以一鍵重新連線
         if (message == null) postIdleNotification() else AppIsland.show(this)
         stopSelf()
@@ -497,8 +490,8 @@ class CastService : Service() {
 
     override fun onDestroy() {
         stopWorker()
-        main.removeCallbacks(popCancel)
-        try { nm.cancel(NOTIF_ID); nm.cancel(NOTIF_ID_POP) } catch (_: Exception) {}
+        releaseMediaSession()
+        try { nm.cancel(NOTIF_ID) } catch (_: Exception) {}
         scope.cancel()
         super.onDestroy()
     }
@@ -522,52 +515,129 @@ class CastService : Service() {
         }
     }
 
-    // ---- HyperIsland ----
-    // 以前「短暫顯示」是在同一則前景通知上反覆加上 / 拿掉焦點參數，系統會把它釘住（無法滑掉、擋住其他通知），
-    // 而且「開始 / 停止播放」也會一直重新觸發。現在：
-    //   持續顯示：焦點參數只放在前景通知上，內容不變就不重送。
-    //   短暫顯示：前景通知完全不帶焦點參數；彈出的島是獨立的一則通知，一定會自動移除（系統逾時 + 我們自己再取消一次）。
-    private val popCancel = Runnable { try { nm.cancel(NOTIF_ID_POP) } catch (_: Exception) {} }
-    private var lastNotifSig = ""
-    private var lastPopSig = ""
+    // ---- HyperIsland（上島）----
+    // 不再使用小米焦點通知（miui.focus.param）：它會讓其他 App 的通知被隱藏、清不掉。
+    // HyperOS 本來就會把「媒體通知」顯示到島上，所以改走標準的 MediaSession + MediaStyle。
+    // 這個 MediaSession「不」設定遠端音量（不會搶走手機音量鍵），只提供：上一首＝音量－、暫停/播放＝靜音、下一首＝音量＋、自訂＝中斷。
+    private var mediaSession: android.media.session.MediaSession? = null
+    private val artCache = HashMap<Int, android.graphics.Bitmap>()
 
-    private fun islandInfo(s: UiState): HyperIsland.Info {
-        val pct = if (s.muted) 0 else (s.volume * 100).roundToInt()
-        return HyperIsland.Info(
-            mode = when {
-                s.phase == Phase.Connecting -> HyperIsland.Mode.Connecting
-                s.playing -> HyperIsland.Mode.Playing
-                else -> HyperIsland.Mode.Connected
-            },
-            name = targetsTitle(s), iconRes = deviceIcon(s.targets.map { it.rx }),
-            volumePct = pct, muted = s.muted,
-        )
+    private fun ensureMediaSession(): android.media.session.MediaSession {
+        mediaSession?.let { return it }
+        val ms = android.media.session.MediaSession(this, "HyperCast")
+        ms.setCallback(object : android.media.session.MediaSession.Callback() {
+            override fun onPlay() { AirPlayStore.setMuted(false) }
+            override fun onPause() { AirPlayStore.setMuted(true) }
+            override fun onSkipToPrevious() { AirPlayStore.adjust(-0.08f) }
+            override fun onSkipToNext() { AirPlayStore.adjust(+0.08f) }
+            override fun onStop() { stopCast(null) }
+            override fun onCustomAction(action: String, extras: android.os.Bundle?) { if (action == ACTION_STOP) stopCast(null) }
+            // 耳機 / 藍牙的實體播放鍵不要拿來靜音 AirPlay（只處理島與通知上的按鈕）
+            override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean = true
+        }, main)
+        mediaSession = ms
+        return ms
     }
 
-    private fun popIsland(s: UiState) {
-        if (HyperIsland.protocol(this) < 3) return          // HyperOS 2 的焦點通知會常駐，不用在短暫模式
-        try {
-            val info = islandInfo(s)
-            val open = PendingIntent.getActivity(
-                this, 0, Intent(this, MainActivity::class.java),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    private fun releaseMediaSession() {
+        val ms = mediaSession ?: return
+        mediaSession = null
+        try { ms.isActive = false; ms.release() } catch (_: Exception) {}
+    }
+
+    /** 島與通知用的封面：玻璃漸層 + 裝置圖示。 */
+    private fun artFor(res: Int): android.graphics.Bitmap? {
+        artCache[res]?.let { return it }
+        return try {
+            val size = 512
+            val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+            val c = android.graphics.Canvas(bmp)
+            val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+            p.shader = android.graphics.LinearGradient(
+                0f, 0f, size.toFloat(), size.toFloat(),
+                intArrayOf(0xFF8EC5FF.toInt(), 0xFF5B6CFF.toInt(), 0xFFB79CFF.toInt()), null, android.graphics.Shader.TileMode.CLAMP
             )
-            val keep = (HyperIsland.BRIEF_SECONDS + 2) * 1000L
-            val b = Notification.Builder(this, CH)
-                .setSmallIcon(R.drawable.ic_airplay)
-                .setContentTitle(info.name)
-                .setContentText(if (s.muted) "靜音" else "音量 ${info.volumePct}%")
-                .setContentIntent(open)
-                .setAutoCancel(true)
-                .setOnlyAlertOnce(true)
-                .setShowWhen(false)
-                .setTimeoutAfter(keep)
-            HyperIsland.apply(this, b, info, true)
-            nm.notify(NOTIF_ID_POP, b.build())
-            main.removeCallbacks(popCancel)
-            main.postDelayed(popCancel, keep)
+            c.drawRoundRect(android.graphics.RectF(0f, 0f, size.toFloat(), size.toFloat()), 120f, 120f, p)
+            val gloss = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0x33FFFFFF }
+            c.drawRoundRect(android.graphics.RectF(16f, 16f, size - 16f, size / 2f), 104f, 104f, gloss)
+            ContextCompat.getDrawable(this, res)?.mutate()?.let { d ->
+                d.setBounds(120, 120, size - 120, size - 120)
+                d.draw(c)
+            }
+            artCache[res] = bmp
+            bmp
         } catch (_: Exception) {
+            null
         }
+    }
+
+    private fun updateMediaSession(s: UiState): android.media.session.MediaSession {
+        val ms = ensureMediaSession()
+        val pct = if (s.muted) 0 else (s.volume * 100).roundToInt()
+        val connecting = s.phase == Phase.Connecting
+        val title = if (connecting) "正在連線…" else targetsTitle(s)
+        val sub = if (connecting) targetsTitle(s) else streamingSubtitle(s)
+        val md = android.media.MediaMetadata.Builder()
+            .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, title)
+            .putString(android.media.MediaMetadata.METADATA_KEY_ARTIST, "$sub · ${if (s.muted) "靜音" else "音量 $pct%"}")
+            .putString(android.media.MediaMetadata.METADATA_KEY_ALBUM, "HyperCast")
+        artFor(deviceIcon(s.targets.map { it.rx }))?.let { md.putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
+        ms.setMetadata(md.build())
+        val st = when {
+            connecting -> android.media.session.PlaybackState.STATE_BUFFERING
+            s.muted -> android.media.session.PlaybackState.STATE_PAUSED
+            else -> android.media.session.PlaybackState.STATE_PLAYING
+        }
+        val acts = android.media.session.PlaybackState.ACTION_PLAY or android.media.session.PlaybackState.ACTION_PAUSE or
+            android.media.session.PlaybackState.ACTION_PLAY_PAUSE or android.media.session.PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+            android.media.session.PlaybackState.ACTION_SKIP_TO_NEXT or android.media.session.PlaybackState.ACTION_STOP
+        ms.setPlaybackState(
+            android.media.session.PlaybackState.Builder()
+                .setActions(acts)
+                .addCustomAction(
+                    android.media.session.PlaybackState.CustomAction.Builder(ACTION_STOP, "中斷連線", R.drawable.ic_stop).build()
+                )
+                .setState(st, android.media.session.PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
+                .build()
+        )
+        if (!ms.isActive) ms.isActive = true
+        return ms
+    }
+
+    private fun buildMediaNotification(s: UiState): Notification {
+        nm.createNotificationChannel(
+            NotificationChannel(CH_MEDIA, "HyperCast 播放控制", NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) }
+        )
+        val ms = updateMediaSession(s)
+        val connecting = s.phase == Phase.Connecting
+        val pct = if (s.muted) 0 else (s.volume * 100).roundToInt()
+        val title = if (connecting) "正在連線…" else targetsTitle(s)
+        val sub = if (connecting) targetsTitle(s) else streamingSubtitle(s)
+        val volTxt = if (s.muted) "靜音" else "$pct%"
+        val open = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        fun act(res: Int, label: String, a: String) =
+            Notification.Action.Builder(Icon.createWithResource(this, res), label, pi(a)).build()
+        val b = Notification.Builder(this, CH_MEDIA)
+            .setSmallIcon(R.drawable.ic_airplay)
+            .setContentTitle(title)
+            .setContentText("$sub · $volTxt")
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setCategory(Notification.CATEGORY_TRANSPORT)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setStyle(Notification.MediaStyle().setMediaSession(ms.sessionToken).setShowActionsInCompactView(0, 1, 2))
+            .setContentIntent(open)
+            .addAction(act(R.drawable.ic_vol_down, "音量-", ACTION_VOL_DOWN))
+            .addAction(act(if (s.muted) R.drawable.ic_vol_up else R.drawable.ic_vol_off, if (s.muted) "取消靜音" else "靜音", ACTION_MUTE))
+            .addAction(act(R.drawable.ic_vol_up, "音量+", ACTION_VOL_UP))
+            .addAction(act(R.drawable.ic_stop, "中斷", ACTION_STOP))
+        if (android.os.Build.VERSION.SDK_INT >= 31) b.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        artFor(deviceIcon(s.targets.map { it.rx }))?.let { b.setLargeIcon(it) }
+        return b.build()
     }
 
     private fun targetsTitle(s: UiState): String = s.targets.joinToString(" ＋ ") { it.rx.name }.ifBlank { "AirPlay" }
@@ -584,6 +654,8 @@ class CastService : Service() {
     }
 
     private fun buildNotification(s: UiState): Notification {
+        if (PrefsStore.state.value.island == IslandMode.On) return buildMediaNotification(s)
+        releaseMediaSession()
         val connecting = s.phase == Phase.Connecting
         val title = when (s.phase) {
             Phase.Connecting -> "正在連線…"
@@ -621,7 +693,7 @@ class CastService : Service() {
             .setContentText("$sub · $volTxt")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setCategory(Notification.CATEGORY_TRANSPORT)
+            .setCategory(Notification.CATEGORY_SERVICE)
             .setStyle(Notification.DecoratedCustomViewStyle())
             .setCustomContentView(rv)
             .setContentIntent(open)
@@ -634,7 +706,6 @@ class CastService : Service() {
             .addAction(act(R.drawable.ic_vol_up, "音量+", ACTION_VOL_UP))
             .addAction(act(R.drawable.ic_stop, "中斷", ACTION_STOP))
 
-        if (PrefsStore.state.value.island == IslandMode.Always) HyperIsland.apply(this, b, islandInfo(s), false)
         return b.build()
     }
 
@@ -664,9 +735,9 @@ class CastService : Service() {
 
     companion object {
         private const val CH = "airplay_status"
+        private const val CH_MEDIA = "airplay_media"
         private const val NOTIF_ID = 4242
         private const val NOTIF_ID_IDLE = 4243
-        private const val NOTIF_ID_POP = 4245
         const val EXTRA_RECONNECT = "com.hypercast.RECONNECT"
         const val ACTION_START = "com.hypercast.START"
         const val ACTION_ADD = "com.hypercast.ADD"

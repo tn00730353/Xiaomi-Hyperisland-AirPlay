@@ -22,6 +22,8 @@ import kotlin.math.tanh
  *  3. 超出死區才慢慢移動（上升 0.7 dB/秒、下降 2.5 dB/秒）；範圍 −9 ～ +6 dB。
  *  4. 偵測到歌曲之間的空檔（靜音 0.4 秒以上），下一首的前幾秒才允許快速調整（8 dB/秒），換歌時音量差很快被補上。
  *  5. 防削波改用「瞬間壓低、緩慢恢復」的限幅器，不再用 tanh 壓扁所有峰值。
+ *  6. （2.0.0 Beta）增益上限同時受「峰值餘裕」限制：把最近約 6 秒的峰值加上增益後不能超過天花板。
+ *     以前的版本在動態大的音樂上增益釘在 +6 dB，峰值每一拍都撞到限幅器，限幅器一直在動作＝呼大呼小。
  */
 class Leveler {
     private val frameSec = Alac.FRAMES_PER_PACKET / 44100.0
@@ -33,7 +35,9 @@ class Leveler {
     private val upPerFrame = 0.7 * frameSec
     private val downPerFrame = 2.5 * frameSec
     private val fastPerFrame = 8.0 * frameSec
-    private val relPerFrame = frameSec / 0.35      // 限幅器約 0.35 秒恢復
+    private val relPerFrame = frameSec / 0.8       // 限幅器約 0.8 秒恢復（只會偶爾碰到）
+    private val peakDecay = exp(-frameSec / 6.0)    // 峰值保持：約 6 秒
+    private val headDownPerFrame = 6.0 * frameSec   // 峰值頂到天花板時，增益最快每秒降 6 dB
 
     private var power = 0.0
     private var gainDb = 0.0
@@ -43,13 +47,14 @@ class Leveler {
     private var warm = 0
     private var limGain = 1.0
     private var prevTotal = 1.0
+    private var peakHold = 0.0
 
     /** 目前增益（dB），供日誌使用。 */
     val currentGainDb: Double get() = gainDb
 
     fun reset() {
         power = 0.0; gainDb = 0.0; initialized = false
-        quietFrames = 0; fastLeft = 0; warm = 0; limGain = 1.0; prevTotal = 1.0
+        quietFrames = 0; fastLeft = 0; warm = 0; limGain = 1.0; prevTotal = 1.0; peakHold = 0.0
     }
 
     fun process(buf: ByteArray) {
@@ -71,18 +76,22 @@ class Leveler {
         if (frameDb < GATE_DB) {
             // 幾乎無聲：凍結增益；空檔夠久就視為換歌，下一首重新量測並允許快速調整
             quietFrames++
-            if (quietFrames == gapFrames) { initialized = false; fastLeft = fastFrames }
+            if (quietFrames == gapFrames) { initialized = false; fastLeft = fastFrames; peakHold = 0.0 }
         } else {
             quietFrames = 0
+            peakHold = max(peak, peakHold * peakDecay)
             if (!initialized) { power = p; initialized = true; warm = warmFrames }
             else {
                 val a = if (warm > 0) { warm--; aWarm } else aLevel
                 power += (p - power) * a
             }
             val levelDb = 10.0 * log10(power + 1e-12)
-            val want = (TARGET_DB - levelDb).coerceIn(MIN_GAIN_DB, MAX_GAIN_DB)
+            val headDb = CEILING_DB - 20.0 * log10(peakHold + 1e-9)        // 這段音樂的峰值還能放大多少 dB
+            val want = min(TARGET_DB - levelDb, headDb).coerceIn(MIN_GAIN_DB, MAX_GAIN_DB)
             val diff = want - gainDb
-            if (fastLeft > 0) {
+            if (gainDb > headDb + 0.3 && fastLeft == 0) {
+                gainDb += diff.coerceIn(-headDownPerFrame, 0.0)                // 峰值頂到天花板：馬上收，不等限幅器
+            } else if (fastLeft > 0) {
                 fastLeft--
                 gainDb += diff.coerceIn(-fastPerFrame, fastPerFrame)
             } else if (abs(diff) > DEADBAND_DB) {
@@ -128,5 +137,6 @@ class Leveler {
         private const val DEADBAND_DB = 2.0
         private const val GATE_DB = -50.0
         private const val CEILING = 0.89     // 約 −1 dBFS
+        private const val CEILING_DB = -1.0
     }
 }

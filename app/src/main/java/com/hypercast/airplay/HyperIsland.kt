@@ -23,7 +23,11 @@ import org.json.JSONObject
  *  - 短暫顯示（預設）：islandTimeout = 6 秒，而且只在狀態 / 音量改變時才附上焦點參數（由 CastService 決定），
  *    其餘時間只剩一般通知。小米文件：沒設定消失時間時，島預設 1 小時才消失、通知卡片 12 小時，期間其他 App
  *    的島 / 通知會被擠到後面。
- *  - 持續顯示：islandPriority = 2（低優先級），讓其他 App 的島優先。
+ *  - 持續顯示：（舊版寫的 islandPriority 不在小米官方文件的欄位清單裡，應該沒有作用，Beta 2 已移除。）
+ *
+ * Beta 2：只使用官方文件列出的欄位（https://dev.mi.com/xiaomihyperos/documentation/detail?pId=2131）：
+ *  islandFirstFloat（首次出現是否自動展開，官方預設 true）、islandTimeout、dismissIsland、updatable、enableFloat。
+ *  每個欄位都可在「設定 → HyperIsland → 焦點通知進階」調整，並寫進診斷日誌（ISLAND 類別）。
  *  - HyperOS 2（協定 1）的焦點通知會常駐狀態列，只有選「持續顯示」才使用。
  */
 object HyperIsland {
@@ -67,12 +71,21 @@ object HyperIsland {
     private val OK = Color.parseColor("#7FE3C0")
 
     /** @param brief true = 短暫顯示（島自動收起）；false = 持續顯示。 */
-    fun apply(ctx: Context, builder: Notification.Builder, info: Info, brief: Boolean) {
+    fun apply(
+        ctx: Context, builder: Notification.Builder, info: Info, brief: Boolean,
+        seconds: Int = BRIEF_SECONDS, dismiss: Boolean = false,
+    ) {
         if (!isSupported(ctx)) return
         if (protocol(ctx) < 3 && brief) return      // HyperOS 2 的焦點通知會常駐狀態列，只有「持續顯示」才使用
         try {
             val extras = Bundle()
-            extras.putString(KEY_PARAM, buildParamJson(info, brief))
+            extras.putString(KEY_PARAM, buildParamJson(info, brief, seconds, dismiss))
+            val pr = PrefsStore.state.value
+            DiagLog.d(
+                "ISLAND",
+                "附上焦點參數：狀態=${info.mode}｜短暫=$brief｜停留=${seconds}s｜dismissIsland=$dismiss｜" +
+                    "islandFirstFloat=${pr.focusFirstFloat}｜updatable=${pr.focusUpdatable}｜協定=${protocol(ctx)}"
+            )
             extras.putBundle(KEY_PICS, Bundle().apply {
                 putParcelable("miui.focus.pic_ticker", GlassIcons.glass(ctx, info.iconRes))
                 putParcelable("miui.focus.pic_icon", GlassIcons.glass(ctx, info.iconRes, base = ACCENT))
@@ -98,15 +111,17 @@ object HyperIsland {
         Mode.Disconnected -> "未連接"
     }
 
-    private fun buildParamJson(i: Info, brief: Boolean): String {
+    private fun buildParamJson(i: Info, brief: Boolean, seconds: Int, dismiss: Boolean): String {
+        val pr = PrefsStore.state.value
         val vol = if (i.muted) "靜音" else "${i.volumePct}%"
         val status = statusText(i.mode)
         val live = i.mode == Mode.Connected || i.mode == Mode.Playing
 
         val island = JSONObject().apply {
             put("islandProperty", 1)
-            if (brief) put("islandTimeout", BRIEF_SECONDS)   // 幾秒後島自動收起，不會一直佔著
-            else put("islandPriority", 2)                    // 低優先級：讓其他 App 的島優先
+            put("islandFirstFloat", pr.focusFirstFloat)      // 官方預設 true＝首次出現就展開成大卡片；這裡預設 false，只出摘要態
+            if (brief) put("islandTimeout", seconds)         // 幾秒後島自動收起，不會一直佔著
+            if (dismiss) put("dismissIsland", true)          // 明確要求收起摘要態（官方欄位）
             put("highlightColor", hex(if (i.mode == Mode.Idle || i.mode == Mode.Disconnected) OK else ACCENT))
             put("bigIslandArea", JSONObject().apply {
                 put("imageTextInfoLeft", JSONObject().apply {
@@ -128,7 +143,7 @@ object HyperIsland {
             put("protocol", 1)
             put("business", "airplay_cast")
             put("enableFloat", false)          // 不主動彈出，避免打斷使用者
-            put("updatable", true)
+            put("updatable", pr.focusUpdatable)
             put("ticker", "${i.name} · $status")
             put("tickerPic", "miui.focus.pic_ticker")
             put("param_island", island)

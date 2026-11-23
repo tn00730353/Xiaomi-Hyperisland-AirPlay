@@ -191,6 +191,7 @@ class CastService : Service() {
 
         // Android 14+：必須先進入 mediaProjection 前景狀態，才能取得 MediaProjection
         nm.cancel(NOTIF_ID_IDLE)
+        islandSig = ""
         startVolumeMirror()
         startForeground(NOTIF_ID, buildNotification(AirPlayStore.state.value),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
@@ -236,8 +237,16 @@ class CastService : Service() {
                 val mode = PrefsStore.state.value.island
                 val pct = if (s.muted) -1 else (s.volume * 100).roundToInt()
                 // 前景通知：只有畫面上看得到的內容變了才重送（「開始 / 停止播放」不會再觸發，除非持續顯示的島要換狀態字）
-                val sig = "${s.phase}|${targetsTitle(s)}|${streamingSubtitle(s)}|$pct|$mode"
-                if (sig != lastNotifSig) { lastNotifSig = sig; nm.notify(NOTIF_ID, buildNotification(s)) }
+                val fp = PrefsStore.state.value
+                val fsig = "${fp.focusSeparate}|${fp.focusLowChannel}|${fp.focusFirstFloat}|${fp.focusUpdatable}|${fp.focusSeconds}"
+                if (fsig != lastFocusSig) { lastFocusSig = fsig; islandSig = ""; lastNotifSig = "" }   // 焦點選項改了：重新附上島參數
+                val sig = "${s.phase}|${targetsTitle(s)}|${streamingSubtitle(s)}|$pct|$mode|" +
+                    (if (mode == IslandMode.FocusAlways || mode == IslandMode.Media) "${s.playing}" else "")
+                if (sig != lastNotifSig) {
+                    lastNotifSig = sig
+                    nm.notify(NOTIF_ID, buildNotification(s))
+                    syncFocusOnly(s)
+                }
             }
         }
     }
@@ -482,6 +491,7 @@ class CastService : Service() {
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
         nm.cancel(NOTIF_ID)
+        cancelFocusOnly()
         releaseMediaSession()
         // 使用者自己中斷：留下一則「已中斷 · 連線」通知，HyperIsland 上可以一鍵重新連線
         if (message == null) postIdleNotification() else AppIsland.show(this)
@@ -492,6 +502,7 @@ class CastService : Service() {
         stopWorker()
         releaseMediaSession()
         try { nm.cancel(NOTIF_ID) } catch (_: Exception) {}
+        cancelFocusOnly()
         scope.cancel()
         super.onDestroy()
     }
@@ -528,12 +539,22 @@ class CastService : Service() {
         mediaSession?.let { return it }
         val ms = android.media.session.MediaSession(this, "HyperCast")
         ms.setCallback(object : android.media.session.MediaSession.Callback() {
-            override fun onPlay() { AirPlayStore.setMuted(false) }
-            override fun onPause() { AirPlayStore.setMuted(true) }
-            override fun onSkipToPrevious() { AirPlayStore.adjust(-0.08f) }
-            override fun onSkipToNext() { AirPlayStore.adjust(+0.08f) }
-            override fun onStop() { stopCast(null) }
-            override fun onCustomAction(action: String, extras: android.os.Bundle?) { if (action == ACTION_STOP) stopCast(null) }
+            // Beta 2：系統 / 島 / 其他 App 自己送來的「暫停」不再讓聲音停掉（Beta 1 把它當成靜音，所以會一直自動暫停）。
+            // 只有在設定打開「播放・暫停＝靜音」時才處理；每一次收到都寫進診斷日誌，方便查是誰送的。
+            override fun onPlay() {
+                val on = PrefsStore.state.value.mediaKeys
+                DiagLog.d("MEDIA", "收到 onPlay（播放・暫停＝靜音：${if (on) "開" else "關，已忽略"}）")
+                if (on) AirPlayStore.setMuted(false)
+            }
+            override fun onPause() {
+                val on = PrefsStore.state.value.mediaKeys
+                DiagLog.d("MEDIA", "收到 onPause（播放・暫停＝靜音：${if (on) "開，已靜音" else "關，已忽略"}）")
+                if (on) AirPlayStore.setMuted(true)
+            }
+            override fun onSkipToPrevious() { DiagLog.d("MEDIA", "收到 上一首＝音量－"); AirPlayStore.adjust(-0.08f) }
+            override fun onSkipToNext() { DiagLog.d("MEDIA", "收到 下一首＝音量＋"); AirPlayStore.adjust(+0.08f) }
+            override fun onStop() { DiagLog.d("MEDIA", "收到 onStop → 中斷串流"); stopCast(null) }
+            override fun onCustomAction(action: String, extras: android.os.Bundle?) { DiagLog.d("MEDIA", "收到自訂動作 $action"); if (action == ACTION_STOP) stopCast(null) }
             // 耳機 / 藍牙的實體播放鍵不要拿來靜音 AirPlay（只處理島與通知上的按鈕）
             override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean = true
         }, main)
@@ -585,14 +606,18 @@ class CastService : Service() {
             .putString(android.media.MediaMetadata.METADATA_KEY_ALBUM, "HyperCast")
         artFor(deviceIcon(s.targets.map { it.rx }))?.let { md.putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
         ms.setMetadata(md.build())
+        val keys = PrefsStore.state.value.mediaKeys
+        // 預設永遠回報「播放中」，系統就沒有理由去「暫停」它；只有打開「播放・暫停＝靜音」時，靜音才顯示成暫停
         val st = when {
             connecting -> android.media.session.PlaybackState.STATE_BUFFERING
-            s.muted -> android.media.session.PlaybackState.STATE_PAUSED
+            keys && s.muted -> android.media.session.PlaybackState.STATE_PAUSED
             else -> android.media.session.PlaybackState.STATE_PLAYING
         }
-        val acts = android.media.session.PlaybackState.ACTION_PLAY or android.media.session.PlaybackState.ACTION_PAUSE or
-            android.media.session.PlaybackState.ACTION_PLAY_PAUSE or android.media.session.PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+        // 沒開「播放・暫停＝靜音」時不公開播放 / 暫停動作，島與系統不會出現暫停鍵，只剩 上一首＝音量－、下一首＝音量＋、停止
+        var acts = android.media.session.PlaybackState.ACTION_SKIP_TO_PREVIOUS or
             android.media.session.PlaybackState.ACTION_SKIP_TO_NEXT or android.media.session.PlaybackState.ACTION_STOP
+        if (keys) acts = acts or android.media.session.PlaybackState.ACTION_PLAY or
+            android.media.session.PlaybackState.ACTION_PAUSE or android.media.session.PlaybackState.ACTION_PLAY_PAUSE
         ms.setPlaybackState(
             android.media.session.PlaybackState.Builder()
                 .setActions(acts)
@@ -656,8 +681,9 @@ class CastService : Service() {
     }
 
     private fun buildNotification(s: UiState): Notification {
-        if (PrefsStore.state.value.island == IslandMode.On) return buildMediaNotification(s)
-        releaseMediaSession()
+        val islandMode = PrefsStore.state.value.island
+        if (islandMode == IslandMode.Media) return buildMediaNotification(s)
+        releaseMediaSession()       // 一般通知 / 焦點通知都不使用媒體工作階段
         val connecting = s.phase == Phase.Connecting
         val title = when (s.phase) {
             Phase.Connecting -> "正在連線…"
@@ -689,7 +715,7 @@ class CastService : Service() {
         fun act(res: Int, label: String, a: String) =
             Notification.Action.Builder(Icon.createWithResource(this, res), label, pi(a)).build()
 
-        val b = Notification.Builder(this, CH)
+        val b = Notification.Builder(this, if (islandMode.isFocus) focusChannel() else CH)
             .setSmallIcon(R.drawable.ic_airplay)
             .setContentTitle(title)
             .setContentText("$sub · $volTxt")
@@ -708,7 +734,112 @@ class CastService : Service() {
             .addAction(act(R.drawable.ic_vol_up, "音量+", ACTION_VOL_UP))
             .addAction(act(R.drawable.ic_stop, "中斷", ACTION_STOP))
 
+        // 焦點通知（純顯示）：只把狀態附在這則通知上，沒有按鈕、沒有媒體工作階段。
+        // 選了「獨立焦點通知」時，前景服務這則維持一般玻璃通知，焦點資料改由另一則可滑掉的通知帶（syncFocusOnly）。
+        if (islandMode.isFocus && !PrefsStore.state.value.focusSeparate) {
+            applyIsland(b, islandMode, islandInfo(s))
+        }
         return b.build()
+    }
+
+    private var lastFocusSig = ""
+    private var dismissNext = false
+
+    private fun islandInfo(s: UiState): HyperIsland.Info {
+        val pct = if (s.muted) 0 else (s.volume * 100).roundToInt()
+        return HyperIsland.Info(
+            mode = when {
+                s.phase == Phase.Connecting -> HyperIsland.Mode.Connecting
+                s.playing -> HyperIsland.Mode.Playing
+                else -> HyperIsland.Mode.Connected
+            },
+            name = targetsTitle(s), iconRes = deviceIcon(s.targets.map { it.rx }),
+            volumePct = pct, muted = s.muted,
+        )
+    }
+
+    /** 焦點通知使用的頻道：一般 / 低重要性（不彈橫幅、不響）。 */
+    private fun focusChannel(): String {
+        if (!PrefsStore.state.value.focusLowChannel) return CH
+        nm.createNotificationChannel(
+            NotificationChannel(CH_FOCUS, "HyperCast 狀態（島）", NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) }
+        )
+        return CH_FOCUS
+    }
+
+    /**
+     * 「獨立焦點通知」：把島的資料放在另一則通知（可滑掉、不是前景服務的那一則）。
+     * 只在「島參數需要附上」的時間窗口內發送；使用者滑掉後，不會被反覆塞回來。
+     */
+    private fun syncFocusOnly(s: UiState) {
+        val pr = PrefsStore.state.value
+        if (!(pr.island.isFocus && pr.focusSeparate)) { cancelFocusOnly(); return }
+        val info = islandInfo(s)
+        if (!islandWanted(pr.island, info)) return
+        val vol = if (s.muted) "靜音" else "${(s.volume * 100).roundToInt()}%"
+        val open = PendingIntent.getActivity(
+            this, 2, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val b = Notification.Builder(this, focusChannel())
+            .setSmallIcon(R.drawable.ic_airplay)
+            .setContentTitle(targetsTitle(s))
+            .setContentText("${if (s.playing) "播放中" else "已連線"} · 音量 $vol")
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+        HyperIsland.apply(this, b, info, brief = pr.island == IslandMode.FocusBrief, seconds = pr.focusSeconds, dismiss = dismissNext)
+        nm.notify(NOTIF_ID_FOCUS, b.build())
+    }
+
+    private fun cancelFocusOnly() {
+        main.removeCallbacks(dismissRunnable)
+        try { nm.cancel(NOTIF_ID_FOCUS) } catch (_: Exception) {}
+    }
+
+    /** 「短暫」：彈出幾秒後明確送出 dismissIsland，把摘要態的島收起來（不只靠 islandTimeout）。 */
+    private val dismissRunnable = Runnable {
+        if (!running) return@Runnable
+        val pr = PrefsStore.state.value
+        if (pr.island != IslandMode.FocusBrief) return@Runnable
+        dismissNext = true
+        try {
+            val s = AirPlayStore.state.value
+            if (pr.focusSeparate) syncFocusOnly(s) else nm.notify(NOTIF_ID, buildNotification(s))
+            DiagLog.d("ISLAND", "已送出 dismissIsland（收起摘要態的島）")
+        } finally {
+            dismissNext = false
+        }
+    }
+
+    // ---- 焦點通知（純顯示）：「短暫」只在內容改變後的幾秒內附上焦點參數，其餘時間只剩一般通知 ----
+    private var islandSig = ""
+    private var islandSigAt = 0L
+
+    private fun islandWanted(mode: IslandMode, info: HyperIsland.Info): Boolean = when (mode) {
+        IslandMode.FocusAlways -> true
+        IslandMode.FocusBrief -> {
+            // 「播放中 / 已連線」的切換（換歌空檔）不算內容改變，避免島一直彈
+            val secs = PrefsStore.state.value.focusSeconds
+            val sig = "${info.name}|${info.volumePct}|${info.muted}|${info.mode == HyperIsland.Mode.Connecting}"
+            val now = SystemClock.elapsedRealtime()
+            if (sig != islandSig) {
+                islandSig = sig; islandSigAt = now
+                main.removeCallbacks(dismissRunnable)
+                main.postDelayed(dismissRunnable, secs * 1000L + 500L)
+                true
+            } else now - islandSigAt < (secs + 1) * 1000L
+        }
+        else -> false
+    }
+
+    private fun applyIsland(b: Notification.Builder, mode: IslandMode, info: HyperIsland.Info) {
+        if (islandWanted(mode, info)) {
+            HyperIsland.apply(
+                this, b, info, brief = mode == IslandMode.FocusBrief,
+                seconds = PrefsStore.state.value.focusSeconds, dismiss = dismissNext,
+            )
+        }
     }
 
     /** 中斷後的「已中斷 · 連線」通知（非前景、可滑掉、2 分鐘後自動消失）。 */
@@ -738,6 +869,8 @@ class CastService : Service() {
     companion object {
         private const val CH = "airplay_status"
         private const val CH_MEDIA = "airplay_media"
+        private const val CH_FOCUS = "airplay_focus"
+        private const val NOTIF_ID_FOCUS = 4245
         private const val NOTIF_ID = 4242
         private const val NOTIF_ID_IDLE = 4243
         const val EXTRA_RECONNECT = "com.hypercast.RECONNECT"

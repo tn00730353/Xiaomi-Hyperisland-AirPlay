@@ -76,6 +76,7 @@ import com.hypercast.airplay.Role
 import com.hypercast.airplay.DeviceItem
 import com.hypercast.airplay.DelayStore
 import com.hypercast.airplay.IslandMode
+import com.hypercast.airplay.isFocus
 import com.hypercast.airplay.PrefsStore
 import com.hypercast.airplay.DiagLog
 import com.hypercast.airplay.Phase
@@ -398,11 +399,76 @@ private fun SettingsPage(
                 }
                 Divider()
             }
+            if (prefs.island.isFocus) {
+                IslandToggle(
+                    "閒置時顯示「未連接」",
+                    "沒在串流、App 開著時，島彈出約 6 秒顯示「未連接」，通知 15 秒後自動消失。只在 HyperOS 3 以上有效",
+                    prefs.idleIsland,
+                ) { PrefsStore.setIdleIsland(ctx, it) }
+                Divider()
+                // ---- 焦點通知進階：每一項對應小米官方文件的一個欄位 / 一種送法，用來找出是哪一項讓其他 App 的一般通知被隱藏 ----
+                GText(
+                    "焦點通知進階（用來排查「其他 App 的一般通知被隱藏」，一次只改一項測試最容易找出原因）",
+                    12, FontWeight.SemiBold, secondary = true,
+                    modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 2.dp),
+                )
+                IslandToggle(
+                    "首次出現時自動展開（islandFirstFloat）",
+                    "官方預設是開：島一出現就展開成大卡片，可能蓋住 / 擠掉其他 App 的橫幅通知。這裡預設關閉，只出摘要態的小島",
+                    prefs.focusFirstFloat,
+                ) { PrefsStore.setFocusFirstFloat(ctx, it) }
+                Divider()
+                IslandToggle(
+                    "獨立焦點通知（可滑掉）",
+                    "把島的資料放在另一則通知，前景服務那一則維持普通玻璃通知。島或那則通知有問題時，滑掉它不會中斷串流",
+                    prefs.focusSeparate,
+                ) { PrefsStore.setFocusSeparate(ctx, it) }
+                Divider()
+                IslandToggle(
+                    "低重要性頻道（不彈橫幅）",
+                    "焦點通知改走低重要性頻道，不彈橫幅、不響。若開了之後島不出現，請關掉",
+                    prefs.focusLowChannel,
+                ) { PrefsStore.setFocusLowChannel(ctx, it) }
+                Divider()
+                IslandToggle(
+                    "持續性焦點通知（updatable）",
+                    "官方欄位「是否為持續性通知」。關閉後焦點通知變成一次性，可能不再跟著狀態更新",
+                    prefs.focusUpdatable,
+                ) { PrefsStore.setFocusUpdatable(ctx, it) }
+                Divider()
+                if (prefs.island == IslandMode.FocusBrief) {
+                    val steps = listOf(3, 6, 10, 15, 30)
+                    val idx = steps.indexOf(prefs.focusSeconds).coerceAtLeast(0)
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            GText("島停留時間", 17, FontWeight.SemiBold)
+                            GText("彈出這麼久之後，明確送出 dismissIsland 把摘要態的島收起來", 12, secondary = true)
+                        }
+                        Box(Modifier.clickableNoRipple { PrefsStore.setFocusSeconds(ctx, steps[(idx - 1).coerceAtLeast(0)]) }.padding(12.dp)) { GText("－", 24, FontWeight.Bold) }
+                        GText("${prefs.focusSeconds} 秒", 16, FontWeight.SemiBold)
+                        Box(Modifier.clickableNoRipple { PrefsStore.setFocusSeconds(ctx, steps[(idx + 1).coerceAtMost(steps.lastIndex)]) }.padding(12.dp)) { GText("＋", 24, FontWeight.Bold) }
+                    }
+                    Divider()
+                }
+            }
+            if (prefs.island == IslandMode.Media) {
+                IslandToggle(
+                    "播放・暫停 = 靜音・取消靜音",
+                    "預設關閉：系統或其他 App 自己送來的「暫停」不會讓聲音停掉。打開後，島與通知上的暫停鍵會靜音接收端",
+                    prefs.mediaKeys,
+                ) { PrefsStore.setMediaKeys(ctx, it) }
+                Divider()
+            }
             InfoRow("狀態", SystemInfo.hyperIslandStatus(ctx))
             Divider()
             GText(
-                "上島使用系統的「媒體通知」：島上與通知列都會出現 音量－／靜音／音量＋／中斷。\n" +
-                    "若島上沒有出現，請確認系統設定 → 通知與控制中心 → HyperCast 已允許通知。",
+                "排查順序：先選「一般通知」，確認其他 App 的訊息通知正常 → 再選「焦點通知・純顯示」，" +
+                    "若又被隱藏，到上面「焦點通知進階」一次改一項（先試「首次出現時自動展開」維持關閉、再試「獨立焦點通知」），" +
+                    "並開診斷日誌：每次附上島參數都會記一筆 ISLAND，匯出後可以對照時間點。\n" +
+                    "若島上沒有出現，請確認 系統設定 → 通知與控制中心 → HyperCast 已允許通知與焦點通知。",
                 12, secondary = true, modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
             )
         }
@@ -475,6 +541,25 @@ private fun InfoRow(label: String, value: String) {
 private fun Divider() {
     val p = LocalPalette.current
     Box(Modifier.fillMaxWidth().padding(horizontal = 18.dp).height(0.5.dp).background(p.text2.copy(alpha = 0.25f)))
+}
+
+/** HyperIsland 區塊裡的開關列（點下去有觸感，與其他設定列一致）。 */
+@Composable
+private fun IslandToggle(title: String, desc: String, on: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .hapticClickable(click = false) { Haptics.toggle(!on); onChange(!on) }
+            .padding(horizontal = 18.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            GText(title, 17, FontWeight.SemiBold)
+            GText(desc, 12, secondary = true)
+        }
+        Spacer(Modifier.width(12.dp))
+        GlassToggle(on)
+    }
 }
 
 @Composable

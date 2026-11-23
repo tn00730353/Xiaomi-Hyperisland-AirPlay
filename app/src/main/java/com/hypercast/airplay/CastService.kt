@@ -519,6 +519,8 @@ class CastService : Service() {
     // 不再使用小米焦點通知（miui.focus.param）：它會讓其他 App 的通知被隱藏、清不掉。
     // HyperOS 本來就會把「媒體通知」顯示到島上，所以改走標準的 MediaSession + MediaStyle。
     // 這個 MediaSession「不」設定遠端音量（不會搶走手機音量鍵），只提供：上一首＝音量－、暫停/播放＝靜音、下一首＝音量＋、自訂＝中斷。
+    /** 上一次送出的前景通知內容簽章；內容沒變就不重送，避免通知被頻繁更新。 */
+    private var lastNotifSig = ""
     private var mediaSession: android.media.session.MediaSession? = null
     private val artCache = HashMap<Int, android.graphics.Bitmap>()
 

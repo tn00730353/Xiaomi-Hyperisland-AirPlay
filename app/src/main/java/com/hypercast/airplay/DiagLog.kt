@@ -288,6 +288,12 @@ object DiagLog {
         return "HyperCast_${stamp}_$p.log"
     }
 
+    /** 日誌最後一筆事件的時間（信件主旨用）。 */
+    fun exportStamp(): String {
+        val t = if (lastEventMs > 0) lastEventMs else System.currentTimeMillis()
+        return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(t))
+    }
+
     fun hasData(): Boolean = entries > 0
 
     /** 等待佇列中的寫入完成（匯出前呼叫，須在背景執行緒）。 */

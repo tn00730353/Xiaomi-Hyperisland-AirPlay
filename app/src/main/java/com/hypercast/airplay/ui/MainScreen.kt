@@ -106,6 +106,8 @@ fun MainScreen(
     onDiagDisable: () -> Unit,
     onDiagExport: () -> Unit,
     onDiagClear: () -> Unit,
+    onFeedback: () -> Unit,
+    onQuit: () -> Unit,
 ) {
     val palette = paletteFor(theme)
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -154,7 +156,7 @@ fun MainScreen(
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 if (showSettings) {
-                    SettingsPage(theme, onTheme, delayMs, onDelay, diag, onDiagEnable, onDiagDisable, onDiagExport, onDiagClear) { showSettings = false }
+                    SettingsPage(theme, onTheme, delayMs, onDelay, diag, onDiagEnable, onDiagDisable, onDiagExport, onDiagClear, onFeedback, onQuit) { showSettings = false }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -201,6 +203,8 @@ private fun SettingsPage(
     onDiagDisable: () -> Unit,
     onDiagExport: () -> Unit,
     onDiagClear: () -> Unit,
+    onFeedback: () -> Unit,
+    onQuit: () -> Unit,
     onBack: () -> Unit,
 ) {
     val p = LocalPalette.current
@@ -252,9 +256,9 @@ private fun SettingsPage(
                 GText(if (delayMs > 0) "+$delayMs ms" else "$delayMs ms", 17, FontWeight.SemiBold)
                 GText("正值＝聲音更晚播出（對畫面太快時使用），負值＝更早；串流中可即時調整", 12, secondary = true)
             }
-            Box(Modifier.clickableNoRipple { onDelay(delayMs - DelayStore.STEP) }.padding(12.dp)) { GText("－", 24, FontWeight.Bold) }
-            Box(Modifier.clickableNoRipple { onDelay(0) }.padding(8.dp)) { GText("0", 15, secondary = true) }
-            Box(Modifier.clickableNoRipple { onDelay(delayMs + DelayStore.STEP) }.padding(12.dp)) { GText("＋", 24, FontWeight.Bold) }
+            Box(Modifier.clickableNoRipple { if (delayMs - DelayStore.STEP < DelayStore.MIN) Haptics.edge(); onDelay(delayMs - DelayStore.STEP) }.padding(12.dp)) { GText("－", 24, FontWeight.Bold) }
+            Box(Modifier.clickableNoRipple { if (delayMs != 0) Haptics.detent(); onDelay(0) }.padding(8.dp)) { GText("0", 15, secondary = true) }
+            Box(Modifier.clickableNoRipple { if (delayMs + DelayStore.STEP > DelayStore.MAX) Haptics.edge(); onDelay(delayMs + DelayStore.STEP) }.padding(12.dp)) { GText("＋", 24, FontWeight.Bold) }
         }
     }
 
@@ -362,9 +366,9 @@ private fun SettingsPage(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    GText("Alive 觸覺反饋", 17, FontWeight.SemiBold)
+                    GText("觸感", 17, FontWeight.SemiBold)
                     GText(
-                        "每次點觸都有對應的震動回饋：按下輕、放開實，滑桿逐格輕敲，連線成功像呼吸般上揚。線性馬達的手機效果最好",
+                        "每次點觸都有對應的震動：按下輕、放開實，滑桿逐格輕敲，到最小 / 最大 / 50% 或延遲上下限時有明顯的臨界回饋，連線成功像呼吸般上揚。線性馬達的手機效果最好",
                         12, secondary = true,
                     )
                 }
@@ -403,6 +407,60 @@ private fun SettingsPage(
             )
         }
     }
+
+    // ---------------- 意見回饋
+    var fbStep by rememberSaveable { mutableStateOf(0) }       // 1 需先開啟記錄 · 2 還沒有內容 · 3 寄信前提醒
+    var showConsentView by rememberSaveable { mutableStateOf(false) }
+    GText("意見回饋", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
+                GText("聯絡開發者", 17, FontWeight.SemiBold)
+                GText(com.hypercast.airplay.FeedbackMail.EMAIL, 14, secondary = true)
+            }
+            Divider()
+            ActionRow(
+                "傳送意見與日誌給開發者",
+                "開啟郵件 App，自動附上日誌檔；信件主旨會自動使用日誌的時間",
+            ) { fbStep = when { !diag.enabled -> 1; diag.entries == 0 -> 2; else -> 3 } }
+        }
+    }
+    when (fbStep) {
+        1 -> NoticeDialog(
+            "尚未開啟日誌記錄",
+            "要附上日誌，需要先開啟記錄，並重現一次問題。\n\n開啟前請先閱讀並同意《日誌同意書》。開啟後約 5 分鐘，我會通知你回來儲存或傳送日誌。",
+            "閱讀同意書", "取消", onConfirm = { fbStep = 0; showConsent = true }, onCancel = { fbStep = 0 },
+        )
+        2 -> NoticeDialog(
+            "還沒有記錄到內容",
+            "請先回到首頁重現一次問題（例如連線一次），再回來傳送。",
+            "知道了", null, onConfirm = { fbStep = 0 }, onCancel = { fbStep = 0 },
+        )
+        3 -> NoticeDialog(
+            "寄信前請注意",
+            "寄出前請確認你已閱讀並同意《日誌同意書》。這封信會附上日誌檔：IP 末段、MAC、UUID 已遮蔽，不含配對碼、金鑰、音訊內容與 Wi-Fi 名稱。\n\n信件主旨會自動使用日誌的時間，請不要修改，方便對照。",
+            "同意並寄信", "取消", onConfirm = { fbStep = 0; onFeedback() }, onCancel = { fbStep = 0 },
+            neutral = "查看同意書", onNeutral = { showConsentView = true },
+        )
+    }
+    if (showConsentView) {
+        ConsentDialog(
+            onAgree = { showConsentView = false },
+            onCancel = { showConsentView = false },
+            agreeText = "我知道了", cancelText = "關閉",
+        )
+    }
+
+    // ---------------- 應用程式
+    GText("應用程式", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        ActionRow("完全關閉程式", "中斷連接、結束所有背景服務並關閉 HyperCast", onQuit)
+    }
+
+    GText(
+        "使用 Claude 以及人工修改及審查技術製作",
+        12, secondary = true, modifier = Modifier.fillMaxWidth().padding(top = 4.dp), align = TextAlign.Center,
+    )
 }
 
 @Composable
@@ -485,7 +543,12 @@ private fun DialogButton(text: String, filled: Boolean, modifier: Modifier, onCl
 
 /** 開啟日誌前的同意書：說明收集的資料、用途與使用者權益。 */
 @Composable
-private fun ConsentDialog(onAgree: () -> Unit, onCancel: () -> Unit) {
+private fun ConsentDialog(
+    onAgree: () -> Unit,
+    onCancel: () -> Unit,
+    agreeText: String = "同意並開始記錄",
+    cancelText: String = "不同意",
+) {
     val p = LocalPalette.current
     Dialog(onDismissRequest = onCancel, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
@@ -529,8 +592,8 @@ private fun ConsentDialog(onAgree: () -> Unit, onCancel: () -> Unit) {
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                DialogButton("不同意", false, Modifier.weight(1f), onCancel)
-                DialogButton("同意並開始記錄", true, Modifier.weight(1.4f), onAgree)
+                DialogButton(cancelText, false, Modifier.weight(1f), onCancel)
+                DialogButton(agreeText, true, Modifier.weight(1.4f), onAgree)
             }
         }
     }
@@ -618,9 +681,14 @@ private fun NowPlaying(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 CircleButton(if (state.muted) R.drawable.ic_vol_off else R.drawable.ic_vol_up, 58, onMute)
-                GlassCard(Modifier.size(58.dp), radius = 29.dp, onClick = onDisconnect) {
-                    Box(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
-                        Box(Modifier.size(20.dp).clip(RoundedCornerShape(6.dp)).background(p.accent))
+                GlassCard(Modifier.height(58.dp), radius = 29.dp, onClick = onDisconnect) {
+                    Row(
+                        Modifier.height(58.dp).padding(horizontal = 26.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Box(Modifier.size(14.dp).clip(RoundedCornerShape(4.dp)).background(p.accent))
+                        GText("中斷連接", 16, FontWeight.SemiBold)
                     }
                 }
             }
@@ -797,6 +865,41 @@ private fun StatusPill(state: UiState) {
             }
             Spacer(Modifier.width(8.dp))
             GText(label, 14, FontWeight.SemiBold)
+        }
+    }
+}
+
+/** 通用提示視窗（寄信前提醒等）。 */
+@Composable
+private fun NoticeDialog(
+    title: String,
+    body: String,
+    confirm: String,
+    cancel: String?,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit,
+    neutral: String? = null,
+    onNeutral: () -> Unit = {},
+) {
+    val p = LocalPalette.current
+    LaunchedEffect(Unit) { Haptics.tick() }
+    Dialog(onDismissRequest = onCancel, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            Modifier
+                .padding(horizontal = 24.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(30.dp))
+                .background(if (p.dark) Color(0xF21C1C1E) else Color(0xF7FFFFFF))
+                .padding(22.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            GText(title, 20, FontWeight.Bold)
+            GText(body, 14, secondary = true)
+            if (neutral != null) DialogButton(neutral, false, Modifier.fillMaxWidth(), onNeutral)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                if (cancel != null) DialogButton(cancel, false, Modifier.weight(1f), onCancel)
+                DialogButton(confirm, true, Modifier.weight(1.3f), onConfirm)
+            }
         }
     }
 }

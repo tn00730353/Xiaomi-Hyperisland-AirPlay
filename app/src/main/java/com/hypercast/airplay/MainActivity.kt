@@ -5,6 +5,9 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Looper
+import android.os.Handler
+import android.app.NotificationManager
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -38,7 +41,7 @@ class MainActivity : ComponentActivity() {
 
     private val locationLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            DiagLog.enable(this)
+            startDiag()
             DiagLog.d("SYS", "概略位置權限：${if (granted) "已授權" else "未授權（檔名地點將顯示為未知地點）"}")
             DiagLog.refreshLocation(this)
         }
@@ -65,7 +68,35 @@ class MainActivity : ComponentActivity() {
     private fun enableDiag() {
         val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
-        if (granted) DiagLog.enable(this) else locationLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (granted) startDiag() else locationLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+    }
+
+    /** 開始記錄，並在 5 分鐘後提醒使用者回來儲存 / 傳送日誌。 */
+    private fun startDiag() {
+        DiagLog.enable(this)
+        LogReminder.schedule(this)
+        Toast.makeText(this, "已開始記錄。請重現問題，約 5 分鐘後會提醒你回來傳送日誌", Toast.LENGTH_LONG).show()
+    }
+
+    private fun sendFeedback() {
+        if (!DiagLog.hasData()) {
+            Toast.makeText(this, "目前沒有日誌可傳送", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!FeedbackMail.send(this)) Toast.makeText(this, "找不到可用的郵件 App", Toast.LENGTH_LONG).show()
+    }
+
+    /** 完全關閉：中斷串流、移除所有通知、結束程序。 */
+    private fun quitApp() {
+        val streaming = AirPlayStore.state.value.phase != Phase.Idle
+        if (streaming) CastService.stop(this)
+        DiagLog.flush()
+        runCatching { discovery.stop() }
+        finishAndRemoveTask()
+        Handler(Looper.getMainLooper()).postDelayed({
+            runCatching { getSystemService(NotificationManager::class.java).cancelAll() }
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }, if (streaming) 1500L else 300L)
     }
 
     private fun exportDiag() {
@@ -183,9 +214,11 @@ class MainActivity : ComponentActivity() {
                 state = state,
                 diag = diag,
                 onDiagEnable = ::enableDiag,
-                onDiagDisable = { DiagLog.disable() },
+                onDiagDisable = { DiagLog.disable(); LogReminder.cancel(this) },
                 onDiagExport = ::exportDiag,
                 onDiagClear = { DiagLog.clear() },
+                onFeedback = ::sendFeedback,
+                onQuit = ::quitApp,
                 theme = theme,
                 onTheme = { t: AppTheme -> theme = t; ThemeStore.save(this, t) },
                 onToggle = ::toggle,

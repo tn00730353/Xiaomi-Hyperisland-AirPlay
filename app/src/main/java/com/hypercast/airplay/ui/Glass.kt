@@ -125,29 +125,6 @@ fun Modifier.hapticClickable(click: Boolean = true, onClick: () -> Unit): Modifi
         .pressDetect(st, click) { cb() }
 }
 
-/** 漂浮的玻璃氣泡：被 GlassCard 的模糊背景折射，讓玻璃有東西可以「折」。 */
-private fun DrawScope.bubble(c: Offset, r: Float, tint: Color, strength: Float) {
-    drawCircle(
-        Brush.radialGradient(
-            listOf(Color.Transparent, tint.copy(alpha = 0.10f * strength), tint.copy(alpha = 0.34f * strength)),
-            center = c, radius = r,
-        ),
-        radius = r, center = c,
-    )
-    drawCircle(
-        Brush.linearGradient(
-            listOf(Color.White.copy(alpha = 0.9f * strength), Color.White.copy(alpha = 0.04f), Color.White.copy(alpha = 0.5f * strength)),
-            start = Offset(c.x - r, c.y - r), end = Offset(c.x + r, c.y + r),
-        ),
-        radius = r, center = c, style = Stroke(1.6f),
-    )
-    drawArc(
-        Color.White.copy(alpha = 0.75f * strength), startAngle = 198f, sweepAngle = 52f, useCenter = false,
-        topLeft = Offset(c.x - r * 0.78f, c.y - r * 0.78f), size = Size(r * 1.56f, r * 1.56f),
-        style = Stroke(r * 0.07f, cap = StrokeCap.Round),
-    )
-}
-
 /** 流動背景（玻璃的「折射」來源），依外觀切換：幻彩 / 純白 / 純黑。 */
 @Composable
 fun GlassScene() {
@@ -178,13 +155,6 @@ fun GlassScene() {
                 blob(Color(0xFF1F5B6B), Offset(w * (0.30f + 0.08f * sin(a + 2f)), h * (0.90f + 0.03f * cos(a))), w * 0.75f, 0.30f)
             }
         }
-        // 漂浮玻璃氣泡（三種外觀共用，強度不同）
-        val k = when (theme) { AppTheme.Iridescent -> 1f; AppTheme.White -> 0.55f; AppTheme.Black -> 0.7f }
-        val tint = when (theme) { AppTheme.Iridescent -> Color(0xFFB79CFF); AppTheme.White -> Color(0xFF9AA6C0); AppTheme.Black -> Color(0xFF8EC5FF) }
-        bubble(Offset(w * (0.82f + 0.05f * sin(a * 0.9f)), h * (0.12f + 0.03f * cos(a * 0.7f))), w * 0.13f, tint, k)
-        bubble(Offset(w * (0.10f + 0.04f * cos(a * 0.8f)), h * (0.47f + 0.04f * sin(a * 0.6f))), w * 0.085f, tint, k)
-        bubble(Offset(w * (0.70f + 0.06f * sin(a * 0.5f + 1f)), h * (0.70f + 0.04f * cos(a * 0.9f))), w * 0.17f, tint, k * 0.9f)
-        bubble(Offset(w * (0.30f + 0.05f * cos(a * 0.7f + 2f)), h * (0.93f + 0.02f * sin(a))), w * 0.10f, tint, k * 0.8f)
     }
 }
 
@@ -328,7 +298,12 @@ fun GlassSlider(value: Float, onChange: (Float) -> Unit, modifier: Modifier = Mo
         val step = (f * 20).roundToInt()
         if (step != lastStep) {
             lastStep = step
-            if (step == 0 || step == 20) Haptics.edge() else Haptics.tick()
+            when (step) {
+                0, 20 -> Haptics.edge()      // 最小 / 最大：重重一下
+                10 -> Haptics.detent()       // 正中間 50%：明顯的卡榫感
+                5, 15 -> Haptics.click()     // 25% / 75%
+                else -> Haptics.tick()
+            }
         }
         cb(f)
     }

@@ -8,7 +8,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 
 /**
- * Alive 生命感觸覺反饋：按下是輕巧的 tick，放開是飽滿的 click，開關有「起伏」，
+ * 生命感觸感：按下是輕巧的 tick，放開是飽滿的 click，開關有「起伏」，
  * 連線成功像呼吸一樣上揚、失敗是兩下低沉的 thud。支援線性馬達的裝置會用 Primitive 合成，
  * 其他裝置退回系統預設效果。使用者可在設定中關閉。
  */
@@ -62,10 +62,20 @@ object Haptics {
             ?: predefined(VibrationEffect.EFFECT_TICK)
     )
 
-    /** 滑桿到頭 / 到底。 */
+    /** 臨界（到頭 / 到底 / 達到上下限）：重重的一下加一個低沉的尾音。 */
     fun edge() = play(
-        primitives(Triple(VibrationEffect.Composition.PRIMITIVE_CLICK, 1f, 0))
-            ?: predefined(VibrationEffect.EFFECT_HEAVY_CLICK)
+        primitives(
+            Triple(VibrationEffect.Composition.PRIMITIVE_CLICK, 1f, 0),
+            Triple(VibrationEffect.Composition.PRIMITIVE_THUD, 0.7f, 40),
+        ) ?: predefined(VibrationEffect.EFFECT_HEAVY_CLICK)
+    )
+
+    /** 經過中間值 / 歸零：像撥到卡榫。 */
+    fun detent() = play(
+        primitives(
+            Triple(VibrationEffect.Composition.PRIMITIVE_CLICK, 0.95f, 0),
+            Triple(VibrationEffect.Composition.PRIMITIVE_TICK, 0.5f, 30),
+        ) ?: predefined(VibrationEffect.EFFECT_HEAVY_CLICK)
     )
 
     /** 開關：打開時由輕到重，關閉時由重到輕。 */

@@ -4,6 +4,15 @@ package com.hypercast.airplay.ui
 import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import com.hypercast.airplay.Haptics
+import com.hypercast.airplay.setHaptics
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -116,6 +125,15 @@ fun MainScreen(
         }
     }
     BackHandler(enabled = showSettings) { showSettings = false }
+    var firstPhase by remember { mutableStateOf(true) }
+    LaunchedEffect(state.phase) {
+        if (firstPhase) { firstPhase = false; return@LaunchedEffect }
+        when (state.phase) {
+            Phase.Streaming -> Haptics.success()
+            Phase.Error -> Haptics.fail()
+            else -> {}
+        }
+    }
 
     CompositionLocalProvider(
         LocalSceneTime provides t,
@@ -145,6 +163,7 @@ fun MainScreen(
                         }
                         CircleButton(R.drawable.ic_settings) { showSettings = true }
                     }
+                    StatusPill(state)
                     NowPlaying(state, onDisconnect, onVolume, onMute)
                     if (state.phase == Phase.Streaming || state.phase == Phase.Connecting) {
                         ChannelCard(state, onChannelMode)
@@ -256,7 +275,7 @@ private fun SettingsPage(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clickable { if (diag.enabled) onDiagDisable() else showConsent = true }
+                    .hapticClickable(click = false) { Haptics.toggle(!diag.enabled); if (diag.enabled) onDiagDisable() else showConsent = true }
                     .padding(horizontal = 18.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -302,7 +321,7 @@ private fun SettingsPage(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clickable { PrefsStore.setMirrorVolume(ctx, !prefs.mirrorVolume) }
+                    .hapticClickable(click = false) { Haptics.toggle(!prefs.mirrorVolume); PrefsStore.setMirrorVolume(ctx, !prefs.mirrorVolume) }
                     .padding(horizontal = 18.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -320,7 +339,7 @@ private fun SettingsPage(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clickable { PrefsStore.setLeveler(ctx, !prefs.leveler) }
+                    .hapticClickable(click = false) { Haptics.toggle(!prefs.leveler); PrefsStore.setLeveler(ctx, !prefs.leveler) }
                     .padding(horizontal = 18.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -333,6 +352,24 @@ private fun SettingsPage(
                 }
                 Spacer(Modifier.width(12.dp))
                 GlassToggle(prefs.leveler)
+            }
+            Divider()
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .hapticClickable(click = false) { Haptics.toggle(!prefs.haptics); PrefsStore.setHaptics(ctx, !prefs.haptics) }
+                    .padding(horizontal = 18.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    GText("Alive 觸覺反饋", 17, FontWeight.SemiBold)
+                    GText(
+                        "每次點觸都有對應的震動回饋：按下輕、放開實，滑桿逐格輕敲，連線成功像呼吸般上揚。線性馬達的手機效果最好",
+                        12, secondary = true,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                GlassToggle(prefs.haptics)
             }
         }
     }
@@ -385,20 +422,23 @@ private fun Divider() {
 @Composable
 private fun GlassToggle(on: Boolean) {
     val p = LocalPalette.current
+    val x by animateDpAsState(if (on) 22.dp else 0.dp, spring(dampingRatio = 0.5f, stiffness = 420f), label = "tg")
+    val grow by animateFloatAsState(if (on) 1f else 0f, tween(260), label = "tg2")
     Box(
         Modifier
             .width(52.dp)
             .height(30.dp)
             .clip(RoundedCornerShape(15.dp))
-            .background(if (on) p.accent else p.track),
+            .background(Brush.horizontalGradient(listOf(p.track, p.accent.copy(alpha = 0.35f + 0.65f * grow)))
+                .let { if (on) it else Brush.horizontalGradient(listOf(p.track, p.track)) }),
     ) {
         Box(
             Modifier
-                .align(if (on) Alignment.CenterEnd else Alignment.CenterStart)
+                .offset(x = x)
                 .padding(3.dp)
                 .size(24.dp)
                 .clip(CircleShape)
-                .background(Color.White)
+                .background(Brush.verticalGradient(listOf(Color.White, Color(0xFFE6E9F2))))
         )
     }
 }
@@ -408,7 +448,7 @@ private fun ActionRow(title: String, desc: String?, onClick: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .hapticClickable(onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 16.dp)
     ) {
         GText(title, 17, FontWeight.SemiBold)
@@ -432,7 +472,7 @@ private fun DialogButton(text: String, filled: Boolean, modifier: Modifier, onCl
             .height(48.dp)
             .clip(RoundedCornerShape(24.dp))
             .background(if (filled) p.accent else p.chip)
-            .clickable(onClick = onClick),
+            .hapticClickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         if (filled) {
@@ -496,8 +536,9 @@ private fun ConsentDialog(onAgree: () -> Unit, onCancel: () -> Unit) {
     }
 }
 
+@Composable
 private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier =
-    this.clickable(onClick = onClick)
+    this.hapticClickable(onClick = onClick)
 
 // ---------------------------------------------------------------- 主頁元件
 
@@ -661,7 +702,7 @@ private fun ModeRow(title: String, desc: String, selected: Boolean, onClick: () 
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
             .background(if (selected) p.chip else Color.Transparent)
-            .clickable(onClick = onClick)
+            .hapticClickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -721,6 +762,41 @@ private fun PinDialog(req: com.hypercast.airplay.PinRequest) {
                 DialogButton("取消", false, Modifier.weight(1f)) { PinBroker.cancel() }
                 DialogButton("連線", true, Modifier.weight(1f)) { if (text.isNotEmpty()) PinBroker.submit(text) }
             }
+        }
+    }
+}
+
+/** 連線狀態膠囊：呼吸的狀態點 + 文字（HyperOS 4「生命感」的小呼吸）。 */
+@Composable
+private fun StatusPill(state: UiState) {
+    val p = LocalPalette.current
+    val (label, dot) = when (state.phase) {
+        Phase.Idle -> "未連接" to Color(0xFF9AA0AC)
+        Phase.Connecting -> "連線中…" to Color(0xFFFFB84D)
+        Phase.Streaming -> "已連線 · " + state.targets.joinToString(" ＋ ") { it.rx.name }.ifBlank { "AirPlay" } to Color(0xFF34D399)
+        Phase.Error -> "連線失敗" to Color(0xFFFF5A5F)
+    }
+    val tr = rememberInfiniteTransition(label = "pill")
+    val period = if (state.phase == Phase.Connecting) 700 else 2200
+    val pulse by tr.animateFloat(
+        0f, 1f, infiniteRepeatable(tween(period, easing = LinearEasing), RepeatMode.Restart), label = "pulse",
+    )
+    GlassCard(Modifier.wrapContentWidth(), radius = 22.dp) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier
+                        .size((8 + 10 * pulse).dp)
+                        .clip(CircleShape)
+                        .background(dot.copy(alpha = 0.35f * (1f - pulse)))
+                )
+                Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
+            }
+            Spacer(Modifier.width(8.dp))
+            GText(label, 14, FontWeight.SemiBold)
         }
     }
 }

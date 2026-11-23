@@ -167,6 +167,7 @@ class MainActivity : ComponentActivity() {
         DiagLog.init(this)
         VolumeStore.init(this)
         PrefsStore.init(this)
+        Haptics.init(this)
         AirPlayStore.update { it.copy(volume = VolumeStore.load()) }
         discovery = RaopDiscovery(this)
 
@@ -204,9 +205,20 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
     }
 
+    private val notifLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> if (ok) showIdleIsland() }
+
+    /** 沒在串流時，在 HyperIsland 顯示「未連接」。 */
+    private fun showIdleIsland() {
+        if (AirPlayStore.state.value.phase == Phase.Idle) AppIsland.show(this)
+    }
+
     override fun onStart() {
         super.onStart()
         discovery.start()
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) else showIdleIsland()
     }
 
     override fun onStop() {

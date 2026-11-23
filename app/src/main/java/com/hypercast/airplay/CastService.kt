@@ -172,6 +172,7 @@ class CastService : Service() {
     // ------------------------------------------------------------ 開始 / 停止
 
     private fun startCast(i: Intent) {
+        AppIsland.hide(this)
         if (running) stopWorker()
 
         val targets = listOfNotNull(readTarget(i, "a_"), readTarget(i, "b_"))
@@ -476,7 +477,7 @@ class CastService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         nm.cancel(NOTIF_ID)
         // 使用者自己中斷：留下一則「已中斷 · 連線」通知，HyperIsland 上可以一鍵重新連線
-        if (message == null) postIdleNotification()
+        if (message == null) postIdleNotification() else AppIsland.show(this)
         stopSelf()
     }
 
@@ -609,7 +610,7 @@ class CastService : Service() {
     /** 中斷後的「已中斷 · 連線」通知（非前景、可滑掉、2 分鐘後自動消失）。 */
     private fun postIdleNotification() {
         val last = LastStore.load(this)
-        if (last.isEmpty()) return
+        if (last.isEmpty()) { AppIsland.show(this); return }
         val names = last.joinToString(" ＋ ") { it.second }
         val reconnect = PendingIntent.getActivity(
             this, 77,

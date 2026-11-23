@@ -17,6 +17,8 @@ data class Prefs(
     val mirrorVolume: Boolean = true,
     /** 音量平衡：把不同歌曲的整體響度拉到接近，並限制爆音。 */
     val leveler: Boolean = false,
+    /** Alive 生命感觸覺反饋。 */
+    val haptics: Boolean = true,
 )
 
 /** 使用者設定（UI 與前景服務共用）。 */
@@ -33,7 +35,9 @@ object PrefsStore {
             island = island,
             mirrorVolume = sp.getBoolean("mirror_volume", true),
             leveler = sp.getBoolean("leveler", false),
+            haptics = sp.getBoolean("haptics", true),
         )
+        Haptics.enabled = state.value.haptics
         loaded = true
     }
 
@@ -53,4 +57,10 @@ object PrefsStore {
         state.value = state.value.copy(leveler = on)
         sp(ctx).edit().putBoolean("leveler", on).apply()
     }
+}
+
+fun PrefsStore.setHaptics(ctx: Context, on: Boolean) {
+    state.value = state.value.copy(haptics = on)
+    Haptics.enabled = on
+    ctx.applicationContext.getSharedPreferences("hypercast", Context.MODE_PRIVATE).edit().putBoolean("haptics", on).apply()
 }

@@ -30,7 +30,7 @@ object HyperIsland {
     private const val KEY_PARAM = "miui.focus.param"
     private const val KEY_PICS = "miui.focus.pics"
 
-    enum class Mode { Connecting, Connected, Playing, Idle }
+    enum class Mode { Connecting, Connected, Playing, Idle, Disconnected }
 
     /** 系統是否支援焦點通知（HyperOS 2 = 1、HyperOS 3 / 4 超級島 = 3）。 */
     fun protocol(ctx: Context): Int = try {
@@ -95,6 +95,7 @@ object HyperIsland {
         Mode.Connected -> "已連線"
         Mode.Playing -> "播放中"
         Mode.Idle -> "已中斷"
+        Mode.Disconnected -> "未連接"
     }
 
     private fun buildParamJson(i: Info, brief: Boolean): String {
@@ -106,7 +107,7 @@ object HyperIsland {
             put("islandProperty", 1)
             if (brief) put("islandTimeout", BRIEF_SECONDS)   // 幾秒後島自動收起，不會一直佔著
             else put("islandPriority", 2)                    // 低優先級：讓其他 App 的島優先
-            put("highlightColor", hex(if (i.mode == Mode.Idle) OK else ACCENT))
+            put("highlightColor", hex(if (i.mode == Mode.Idle || i.mode == Mode.Disconnected) OK else ACCENT))
             put("bigIslandArea", JSONObject().apply {
                 put("imageTextInfoLeft", JSONObject().apply {
                     put("type", 1)

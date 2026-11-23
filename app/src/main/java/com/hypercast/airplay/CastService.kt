@@ -218,13 +218,12 @@ class CastService : Service() {
         notifJob?.cancel()
         notifJob = scope.launch {
             // 設定（HyperIsland 顯示方式）改變時也要重送通知
+            lastNotifSig = ""; lastPopSig = ""
             combine(AirPlayStore.state, PrefsStore.state) { s, _ -> s }.collectLatest { s ->
-                delay(120)   // 滑動音量時合併更新，避免通知被系統限流
                 if (!running) return@collectLatest
-                nm.notify(NOTIF_ID, buildNotification(s))
                 // 聲道分配由 UI 改狀態，這裡同步到各目標
                 s.targets.forEach { t -> slots.firstOrNull { it.rx.id == t.rx.id }?.role = t.role }
-                // 只有音量 / 靜音真的變了才送 SET_PARAMETER（以前每次狀態更新，例如「開始 / 停止播放」，都會重送一次）
+                // 音量 / 靜音立刻送到接收端（不等通知）；只有真的變了才送 SET_PARAMETER（以前每次狀態更新，例如「開始 / 停止播放」，都會重送一次）
                 slots.forEach {
                     if (it.live && (it.sentVol != s.volume || it.sentMuted != s.muted)) {
                         it.sentVol = s.volume; it.sentMuted = s.muted
@@ -232,6 +231,20 @@ class CastService : Service() {
                     }
                 }
                 if (s.targets.any { it.state == TargetState.Streaming }) LastStore.save(this@CastService, s.targets)
+                delay(600)   // 通知更新合併：滑動音量時太頻繁會讓系統通知列卡住
+                if (!running) return@collectLatest
+                val mode = PrefsStore.state.value.island
+                val pct = if (s.muted) -1 else (s.volume * 100).roundToInt()
+                // 前景通知：只有畫面上看得到的內容變了才重送（「開始 / 停止播放」不會再觸發，除非持續顯示的島要換狀態字）
+                val sig = "${s.phase}|${targetsTitle(s)}|${streamingSubtitle(s)}|$pct|$mode|${if (mode == IslandMode.Always) s.playing else false}"
+                if (sig != lastNotifSig) { lastNotifSig = sig; nm.notify(NOTIF_ID, buildNotification(s)) }
+                // 短暫顯示：連線 / 連上 / 音量 / 靜音改變才彈一次
+                if (mode == IslandMode.Brief && (s.phase == Phase.Connecting || s.phase == Phase.Streaming)) {
+                    val ps = "${s.phase}|${targetsTitle(s)}|$pct"
+                    if (ps != lastPopSig) { lastPopSig = ps; popIsland(s) }
+                } else if (mode != IslandMode.Brief) {
+                    main.removeCallbacks(popCancel); popCancel.run()
+                }
             }
         }
     }
@@ -476,6 +489,7 @@ class CastService : Service() {
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
         nm.cancel(NOTIF_ID)
+        main.removeCallbacks(popCancel); popCancel.run()
         // 使用者自己中斷：留下一則「已中斷 · 連線」通知，HyperIsland 上可以一鍵重新連線
         if (message == null) postIdleNotification() else AppIsland.show(this)
         stopSelf()
@@ -483,6 +497,8 @@ class CastService : Service() {
 
     override fun onDestroy() {
         stopWorker()
+        main.removeCallbacks(popCancel)
+        try { nm.cancel(NOTIF_ID); nm.cancel(NOTIF_ID_POP) } catch (_: Exception) {}
         scope.cancel()
         super.onDestroy()
     }
@@ -506,26 +522,52 @@ class CastService : Service() {
         }
     }
 
-    // ---- HyperIsland：短暫顯示模式只在內容改變後的幾秒內附上焦點參數 ----
-    private var islandSig = ""
-    private var islandSigAt = 0L
+    // ---- HyperIsland ----
+    // 以前「短暫顯示」是在同一則前景通知上反覆加上 / 拿掉焦點參數，系統會把它釘住（無法滑掉、擋住其他通知），
+    // 而且「開始 / 停止播放」也會一直重新觸發。現在：
+    //   持續顯示：焦點參數只放在前景通知上，內容不變就不重送。
+    //   短暫顯示：前景通知完全不帶焦點參數；彈出的島是獨立的一則通知，一定會自動移除（系統逾時 + 我們自己再取消一次）。
+    private val popCancel = Runnable { try { nm.cancel(NOTIF_ID_POP) } catch (_: Exception) {} }
+    private var lastNotifSig = ""
+    private var lastPopSig = ""
 
-    /** 這次重送通知時要不要附上焦點（島）參數。 */
-    private fun islandWanted(info: HyperIsland.Info): Boolean {
-        return when (PrefsStore.state.value.island) {
-            IslandMode.Off -> false
-            IslandMode.Always -> true
-            IslandMode.Brief -> {
-                val sig = "${info.mode}|${info.name}|${info.volumePct}|${info.muted}"
-                val now = SystemClock.elapsedRealtime()
-                if (sig != islandSig) { islandSig = sig; islandSigAt = now; true }
-                else now - islandSigAt < (HyperIsland.BRIEF_SECONDS + 1) * 1000L
-            }
-        }
+    private fun islandInfo(s: UiState): HyperIsland.Info {
+        val pct = if (s.muted) 0 else (s.volume * 100).roundToInt()
+        return HyperIsland.Info(
+            mode = when {
+                s.phase == Phase.Connecting -> HyperIsland.Mode.Connecting
+                s.playing -> HyperIsland.Mode.Playing
+                else -> HyperIsland.Mode.Connected
+            },
+            name = targetsTitle(s), iconRes = deviceIcon(s.targets.map { it.rx }),
+            volumePct = pct, muted = s.muted,
+        )
     }
 
-    private fun applyIsland(b: Notification.Builder, info: HyperIsland.Info) {
-        if (islandWanted(info)) HyperIsland.apply(this, b, info, PrefsStore.state.value.island == IslandMode.Brief)
+    private fun popIsland(s: UiState) {
+        if (HyperIsland.protocol(this) < 3) return          // HyperOS 2 的焦點通知會常駐，不用在短暫模式
+        try {
+            val info = islandInfo(s)
+            val open = PendingIntent.getActivity(
+                this, 0, Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val keep = (HyperIsland.BRIEF_SECONDS + 2) * 1000L
+            val b = Notification.Builder(this, CH)
+                .setSmallIcon(R.drawable.ic_airplay)
+                .setContentTitle(info.name)
+                .setContentText(if (s.muted) "靜音" else "音量 ${info.volumePct}%")
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
+                .setTimeoutAfter(keep)
+            HyperIsland.apply(this, b, info, true)
+            nm.notify(NOTIF_ID_POP, b.build())
+            main.removeCallbacks(popCancel)
+            main.postDelayed(popCancel, keep)
+        } catch (_: Exception) {
+        }
     }
 
     private fun targetsTitle(s: UiState): String = s.targets.joinToString(" ＋ ") { it.rx.name }.ifBlank { "AirPlay" }
@@ -592,18 +634,7 @@ class CastService : Service() {
             .addAction(act(R.drawable.ic_vol_up, "音量+", ACTION_VOL_UP))
             .addAction(act(R.drawable.ic_stop, "中斷", ACTION_STOP))
 
-        applyIsland(
-            b,
-            HyperIsland.Info(
-                mode = when {
-                    connecting -> HyperIsland.Mode.Connecting
-                    s.playing -> HyperIsland.Mode.Playing
-                    else -> HyperIsland.Mode.Connected
-                },
-                name = targetsTitle(s), iconRes = deviceIcon(s.targets.map { it.rx }),
-                volumePct = pct, muted = s.muted,
-            )
-        )
+        if (PrefsStore.state.value.island == IslandMode.Always) HyperIsland.apply(this, b, islandInfo(s), false)
         return b.build()
     }
 
@@ -628,14 +659,6 @@ class CastService : Service() {
             .setOnlyAlertOnce(true)
             .setTimeoutAfter(120_000)
             .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_airplay), "連線", reconnect).build())
-        applyIsland(
-            b,
-            HyperIsland.Info(
-                mode = HyperIsland.Mode.Idle, name = names,
-                iconRes = deviceIcon(last.mapNotNull { (id, _, _) -> AirPlayStore.state.value.receivers.firstOrNull { it.id == id } }),
-                volumePct = (VolumeStore.load() * 100).roundToInt(), muted = false,
-            )
-        )
         nm.notify(NOTIF_ID_IDLE, b.build())
     }
 
@@ -643,6 +666,7 @@ class CastService : Service() {
         private const val CH = "airplay_status"
         private const val NOTIF_ID = 4242
         private const val NOTIF_ID_IDLE = 4243
+        private const val NOTIF_ID_POP = 4245
         const val EXTRA_RECONNECT = "com.hypercast.RECONNECT"
         const val ACTION_START = "com.hypercast.START"
         const val ACTION_ADD = "com.hypercast.ADD"

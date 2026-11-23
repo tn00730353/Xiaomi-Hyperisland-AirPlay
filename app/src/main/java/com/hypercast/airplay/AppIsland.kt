@@ -49,7 +49,9 @@ object AppIsland {
                 .setContentIntent(open)
                 .setOnlyAlertOnce(true)
                 .setShowWhen(false)
-            if (brief) b.setTimeoutAfter(8_000)
+                .setAutoCancel(true)
+                // 「未連接」不能一直留著：持續顯示模式以前沒有逾時，會變成滑不掉的通知
+                .setTimeoutAfter(if (brief) 8_000L else 30_000L)
             HyperIsland.apply(
                 app, b,
                 HyperIsland.Info(
@@ -59,6 +61,7 @@ object AppIsland {
                 brief,
             )
             nm.notify(ID, b.build())
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ hide(app) }, if (brief) 8_500L else 30_500L)
         } catch (_: Exception) {
         }
     }

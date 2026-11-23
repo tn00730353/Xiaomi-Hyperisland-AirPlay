@@ -1,4 +1,4 @@
-# HyperCast v2.0.0
+# HyperCast v2.0.1
 
 © DylanLiao — 把 Android 的系統音訊，以立體聲串流到 AirPlay 裝置（HomePod、Apple TV、支援 AirPlay 的喇叭與電視）。
 Apple 液態玻璃風格介面、小米 HyperIsland 狀態顯示、可調音訊延遲與觸感回饋。

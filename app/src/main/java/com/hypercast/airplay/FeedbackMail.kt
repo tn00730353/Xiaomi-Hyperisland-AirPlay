@@ -20,9 +20,8 @@ object FeedbackMail {
             val f = File(dir, DiagLog.exportFileName())
             f.writeText(DiagLog.snapshot(), Charsets.UTF_8)
             val uri = FileProvider.getUriForFile(a, "${a.packageName}.fileprovider", f)
-            val subject = "[HyperCast v${BuildConfig.VERSION_NAME}] ${DiagLog.exportStamp()}"
-            val body = "版本：HyperCast v${BuildConfig.VERSION_NAME}（versionCode ${BuildConfig.VERSION_CODE}）\n" +
-                "請在這裡描述遇到的問題（例如：連到哪一台裝置、發生了什麼事）：\n\n\n\n（日誌檔已附在這封信裡）"
+            val subject = DiagLog.exportStamp()
+            val body = "請在這裡描述遇到的問題（例如：連到哪一台裝置、發生了什麼事）：\n\n\n\n（日誌檔已附在這封信裡）"
 
             fun base() = Intent(Intent.ACTION_SEND).apply {
                 putExtra(Intent.EXTRA_EMAIL, arrayOf(EMAIL))

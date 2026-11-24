@@ -141,7 +141,7 @@ object HyperIsland {
         val v2 = JSONObject().apply {
             put("protocol", 1)
             put("business", "airplay_cast")
-            // Beta 2.1 修正：官方文件把 islandFirstFloat / timeout 列在「通知屬性」（param_v2 這一層），
+            // Beta3 修正：官方文件把 islandFirstFloat / timeout 列在「通知屬性」（param_v2 這一層），
             // 之前誤放進 param_island，系統不認得 → 一直套用官方預設 true（每次都展開成大卡片）。
             put("islandFirstFloat", pr.focusFirstFloat)
             // 官方 timeout（分鐘）預設 720＝焦點通知卡片會留 12 小時；短暫模式改成最少 1 分鐘

@@ -100,7 +100,7 @@ class CastService : Service() {
     private var volMirrorOn = false
 
     /**
-     * Beta 2.1：「同步手機音量鍵」關閉時，完全不註冊音量廣播接收器與系統設定觀察者（以前只是收到事件後忽略）。
+     * Beta3：「同步手機音量鍵」關閉時，完全不註冊音量廣播接收器與系統設定觀察者（以前只是收到事件後忽略）。
      * 這樣開關才是真正的 A/B 測試：關掉＝HyperCast 完全不碰手機音量。串流中切換開關會立刻生效。
      */
     private fun syncVolumeMirror() {
@@ -226,11 +226,25 @@ class CastService : Service() {
         // 診斷：記下「通知被擋」時最相關的環境（MediaProjection 已啟動；Android 15+ 的螢幕分享保護會隱藏通知內容）
         DiagLog.d("CAST", "環境：Android SDK ${Build.VERSION.SDK_INT}｜通知模式=${PrefsStore.state.value.island}｜" +
             "同步音量鍵=${PrefsStore.state.value.mirrorVolume}｜焦點協定=${HyperIsland.protocol(this)}｜MediaProjection 已啟動")
+        DiagCollector.onCastStart(this)
         launchNotificationLoop()
+        launchDiagSampler()
         worker = Thread({ runCast(mp) }, "cast-worker").also { it.start() }
     }
 
     private var notifJob: kotlinx.coroutines.Job? = null
+    private var diagJob: kotlinx.coroutines.Job? = null
+
+    /** Beta3：串流中每分鐘記一次電池 / 發熱 / 記憶體 / 鎖屏狀態（只在診斷日誌開啟、且對應項目已同意時才會寫入）。 */
+    private fun launchDiagSampler() {
+        diagJob?.cancel()
+        diagJob = scope.launch {
+            while (running) {
+                delay(60_000)
+                if (running && DiagLog.enabled) DiagCollector.sample(this@CastService)
+            }
+        }
+    }
 
     /** 狀態改變時更新通知（含音量、聲道），並把音量送到每一台接收端。 */
     private fun launchNotificationLoop() {
@@ -485,6 +499,7 @@ class CastService : Service() {
         running = false
         stopVolumeMirror()
         notifJob?.cancel()
+        diagJob?.cancel()
         try { recorder?.stop() } catch (_: Exception) {}
         try { recorder?.release() } catch (_: Exception) {}
         recorder = null
@@ -514,6 +529,7 @@ class CastService : Service() {
         releaseMediaSession()
         // 使用者自己中斷：留下一則「已中斷 · 連線」通知，HyperIsland 上可以一鍵重新連線
         if (message == null) postIdleNotification() else AppIsland.show(this)
+        DiagCollector.onCastStop(this, message ?: "使用者中斷")
         stopSelf()
     }
 
@@ -534,9 +550,18 @@ class CastService : Service() {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
     )
 
-    /** 連接的裝置圖示：使用蘋果官方 SF Symbols 風格（單顆／兩顆 HomePod 立體聲組／HomePod mini／Apple TV／AirPlay）。 */
-    private fun deviceIcon(targets: List<Target>): Int =
-        appleDeviceIcon(targets.map { it.rx }, isPair = targets.any { it.pair } || targets.count { it.rx.isHomePod } >= 2)
+    /** 連接的裝置圖示：HomePod / HomePod mini / Apple TV / 一般 AirPlay。 */
+    private fun deviceIcon(rx: List<Receiver>): Int {
+        val m = rx.firstOrNull()?.model ?: ""
+        // Beta3：res/drawable-nodpi 放了蘋果官方圖檔（homepod_official / homepod_mini_official）就優先使用
+        fun official(name: String) = resources.getIdentifier(name, "drawable", packageName)
+        return when {
+            m.startsWith("AudioAccessory5") -> official("homepod_mini_official").takeIf { it != 0 } ?: R.drawable.ic_homepod_mini
+            m.startsWith("AudioAccessory") -> official("homepod_official").takeIf { it != 0 } ?: R.drawable.ic_homepod
+            m.startsWith("AppleTV") -> R.drawable.ic_tv
+            else -> R.drawable.ic_airplay
+        }
+    }
 
     // ---- HyperIsland（上島）----
     // 不再使用小米焦點通知（miui.focus.param）：它會讓其他 App 的通知被隱藏、清不掉。
@@ -616,7 +641,7 @@ class CastService : Service() {
             .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, title)
             .putString(android.media.MediaMetadata.METADATA_KEY_ARTIST, "$sub · ${if (s.muted) "靜音" else "音量 $pct%"}")
             .putString(android.media.MediaMetadata.METADATA_KEY_ALBUM, "HyperCast")
-        artFor(deviceIcon(s.targets))?.let { md.putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
+        artFor(deviceIcon(s.targets.map { it.rx }))?.let { md.putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
         ms.setMetadata(md.build())
         val keys = PrefsStore.state.value.mediaKeys
         // 預設永遠回報「播放中」，系統就沒有理由去「暫停」它；只有打開「播放・暫停＝靜音」時，靜音才顯示成暫停
@@ -675,7 +700,7 @@ class CastService : Service() {
             .addAction(act(R.drawable.ic_vol_up, "音量+", ACTION_VOL_UP))
             .addAction(act(R.drawable.ic_stop, "中斷", ACTION_STOP))
         if (android.os.Build.VERSION.SDK_INT >= 31) b.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
-        artFor(deviceIcon(s.targets))?.let { b.setLargeIcon(it) }
+        artFor(deviceIcon(s.targets.map { it.rx }))?.let { b.setLargeIcon(it) }
         return b.build()
     }
 
@@ -765,7 +790,7 @@ class CastService : Service() {
                 s.playing -> HyperIsland.Mode.Playing
                 else -> HyperIsland.Mode.Connected
             },
-            name = targetsTitle(s), iconRes = deviceIcon(s.targets),
+            name = targetsTitle(s), iconRes = deviceIcon(s.targets.map { it.rx }),
             volumePct = pct, muted = s.muted,
         )
     }

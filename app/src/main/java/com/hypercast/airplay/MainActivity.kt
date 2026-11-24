@@ -2,13 +2,13 @@
 package com.hypercast.airplay
 
 import android.Manifest
-import android.app.NotificationManager
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
-import android.os.Bundle
-import android.os.Handler
 import android.os.Looper
+import android.os.Handler
+import android.app.NotificationManager
+import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,7 +16,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
@@ -28,8 +27,6 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var discovery: RaopDiscovery
     private var pendingTargets: List<Target> = emptyList()
-    private var startDiagAfterPerm: Boolean = false
-    private var permVersion by mutableIntStateOf(0)
 
     private val projectionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -42,24 +39,14 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    private val diagPermLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-            permVersion++
-            val shouldStart = startDiagAfterPerm
-            startDiagAfterPerm = false
-            if (shouldStart && DiagLog.state.value.allConsented) {
-                startDiag()
-                grants.forEach { (perm, ok) ->
-                    DiagLog.d("SYS", "權限請求結果 $perm：${if (ok) "已授權" else "未授權"}")
-                }
-            } else if (DiagLog.enabled) {
-                grants.forEach { (perm, ok) ->
-                    DiagLog.d("SYS", "權限狀態更新 $perm：${if (ok) "已授權" else "未授權"}")
-                }
-                if (grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true) {
-                    DiagLog.refreshLocation(this)
-                }
-            }
+    /** 使用者在同意頁已逐項同意的項目（等系統的位置權限對話框回來後才真正開始記錄）。 */
+    private var pendingConsent: Set<DiagItem> = emptySet()
+
+    private val locationLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            startDiag(pendingConsent)
+            DiagLog.d("LOC", "概略位置權限：${if (granted) "已授權" else "未授權（檔名地點將顯示為未知地點）"}")
+            DiagLog.refreshLocation(this)
         }
 
     private val exportLauncher =
@@ -81,37 +68,20 @@ class MainActivity : ComponentActivity() {
             }.start()
         }
 
-    private fun requestDiagPermission(perm: String) {
-        startDiagAfterPerm = false
-        diagPermLauncher.launch(arrayOf(perm))
-    }
-
-    /** 僅在所有診斷項目皆已同意（逐項同意或全部同意）後，才詢問尚未取得的系統權限並啟動搜集。 */
-    private fun enableDiag() {
-        if (!DiagLog.state.value.allConsented) {
-            Toast.makeText(this, "請先同意所有搜集項目（或按「全部同意」）再開始", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val missing = DiagCategory.entries
-            .filter { it.requiresRuntimePrompt() && !it.isPermissionGranted(this) }
-            .mapNotNull { it.runtimePermission }
-            .distinct()
-        if (missing.isEmpty()) {
-            startDiag()
-        } else {
-            startDiagAfterPerm = true
-            diagPermLauncher.launch(missing.toTypedArray())
-        }
+    /** 同意頁按下「同意並開始記錄」：每一項都已同意才會走到這裡。 */
+    private fun enableDiag(items: Set<DiagItem>) {
+        if (!items.containsAll(DiagItem.all)) return          // 少一項都不開始
+        pendingConsent = items
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (granted) startDiag(items) else locationLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
     }
 
     /** 開始記錄，並在 5 分鐘後提醒使用者回來儲存 / 傳送日誌。 */
-    private fun startDiag() {
-        if (DiagLog.enable(this)) {
-            LogReminder.schedule(this)
-            Toast.makeText(this, "已開始搜集診斷資料。請重現問題，約 5 分鐘後會提醒你回來傳送日誌", Toast.LENGTH_LONG).show()
-        } else {
-            Toast.makeText(this, "請先完成所有項目同意後再開始搜集", Toast.LENGTH_SHORT).show()
-        }
+    private fun startDiag(items: Set<DiagItem>) {
+        if (!DiagLog.enable(this, items)) return
+        LogReminder.schedule(this)
+        Toast.makeText(this, "已開始記錄。請重現問題，約 5 分鐘後會提醒你回來傳送日誌", Toast.LENGTH_LONG).show()
     }
 
     private fun sendFeedback() {
@@ -145,7 +115,6 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-            permVersion++
             if (grants[Manifest.permission.RECORD_AUDIO] == true || hasMic()) {
                 projectionLauncher.launch(
                     getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent()
@@ -175,6 +144,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 點一台裝置：
+     *  - 閒置時 → 開始串流到它
+     *  - 串流中且它不在清單 → 加入成第二台（最多 2 台）
+     *  - 串流中且它已在清單 → 把它移除（只剩一台時就是中斷）
+     */
     private fun toggle(item: DeviceItem) {
         val s = AirPlayStore.state.value
         val ts = item.members.map { Target(it, Role.Stereo, item.pair) }
@@ -192,7 +167,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // ---- 從 HyperIsland / 通知的「連線」重新連線到上次的裝置 ----
-    private val handler = Handler(Looper.getMainLooper())
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private var reconnectTries = 0
 
     private fun handleIntent(i: android.content.Intent?) {
@@ -204,6 +179,7 @@ class MainActivity : ComponentActivity() {
         tryReconnect()
     }
 
+    /** 探索剛啟動，裝置清單可能還是空的：最多等 10 秒。 */
     private fun tryReconnect() {
         val last = LastStore.load(this)
         val rcv = AirPlayStore.state.value.receivers
@@ -231,8 +207,13 @@ class MainActivity : ComponentActivity() {
         Haptics.init(this)
         AirPlayStore.update { it.copy(volume = VolumeStore.load()) }
         discovery = RaopDiscovery(this)
+        // 記錄已開啟時，每次 App 啟動補一份快照（含系統記錄的「上次為什麼結束」）；旋轉畫面等重建不重複記
+        if (DiagLog.enabled && savedInstanceState == null) {
+            DiagLog.d("LOG", "App 啟動")
+            DiagCollector.snapshotAll(this, "App 啟動")
+        }
 
-        android.util.Log.i("HyperCast", "HyperCast v${BuildConfig.VERSION_NAME} — Developed by ${BuildConfig.DEVELOPER}")
+        android.util.Log.i("HyperCast", "Developed by ${BuildConfig.DEVELOPER}")
         handleIntent(intent)
         var theme by mutableStateOf(ThemeStore.load(this))
         var delayMs by mutableStateOf(DelayStore.load(this))
@@ -243,16 +224,8 @@ class MainActivity : ComponentActivity() {
             MainScreen(
                 state = state,
                 diag = diag,
-                permVersion = permVersion,
-                onDiagCategoryConsent = { cat, agree -> DiagLog.setCategoryConsent(this, cat, agree) },
-                onDiagAgreeAll = { agree -> DiagLog.setAllConsented(this, agree) },
-                onDiagRequestPermission = ::requestDiagPermission,
                 onDiagEnable = ::enableDiag,
                 onDiagDisable = { DiagLog.disable(); LogReminder.cancel(this) },
-                onDiagRefresh = {
-                    DiagLog.refreshSnapshot(this)
-                    Toast.makeText(this, "已重新採樣系統診斷快照", Toast.LENGTH_SHORT).show()
-                },
                 onDiagExport = ::exportDiag,
                 onDiagClear = { DiagLog.clear() },
                 onFeedback = ::sendFeedback,
@@ -270,11 +243,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        permVersion++
-    }
-
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -282,11 +250,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private val notifLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-            permVersion++
-            if (ok) showIdleIsland()
-        }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> if (ok) showIdleIsland() }
 
+    /** 沒在串流時，在 HyperIsland 顯示「未連接」。 */
     private fun showIdleIsland() {
         if (AirPlayStore.state.value.phase == Phase.Idle) AppIsland.show(this)
     }
@@ -294,8 +260,9 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         discovery.start()
+        // 沒在串流時清掉本 App 殘留的通知（舊版留下的焦點通知、已中斷通知），其他 App 的通知不受影響
         if (AirPlayStore.state.value.phase == Phase.Idle) {
-            try { getSystemService(NotificationManager::class.java).cancelAll() } catch (_: Exception) {}
+            try { getSystemService(android.app.NotificationManager::class.java).cancelAll() } catch (_: Exception) {}
         }
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED

@@ -18,7 +18,7 @@ object SystemInfo {
         val rows = ArrayList<Pair<String, String>>()
         rows += "Android 版本" to "Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}）"
 
-        val osName = prop("ro.mi.os.version.name")          // 例如 OS2 / OS3
+        val osName = prop("ro.mi.os.version.name")          // 例如 OS2 / OS3 / OS4
         val osBuild = prop("ro.mi.os.version.incremental")  // 例如 OS3.0.3.0.WNCMIXM
         if (osName.isNotBlank() || osBuild.isNotBlank()) {
             val ver = osName.removePrefix("OS").ifBlank { "" }
@@ -30,7 +30,7 @@ object SystemInfo {
 
         rows += "裝置" to "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}"
         if (Build.VERSION.SECURITY_PATCH.isNotBlank()) rows += "安全性更新" to Build.VERSION.SECURITY_PATCH
-        rows += "App 版本" to "HyperCast ${BuildConfig.VERSION_NAME}"
+        rows += "App 版本" to "HyperCast v${BuildConfig.VERSION_NAME}"
         return rows
     }
 

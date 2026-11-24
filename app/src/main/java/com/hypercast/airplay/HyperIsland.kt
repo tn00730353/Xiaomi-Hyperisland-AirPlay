@@ -119,7 +119,6 @@ object HyperIsland {
 
         val island = JSONObject().apply {
             put("islandProperty", 1)
-            put("islandFirstFloat", pr.focusFirstFloat)      // 官方預設 true＝首次出現就展開成大卡片；這裡預設 false，只出摘要態
             if (brief) put("islandTimeout", seconds)         // 幾秒後島自動收起，不會一直佔著
             if (dismiss) put("dismissIsland", true)          // 明確要求收起摘要態（官方欄位）
             put("highlightColor", hex(if (i.mode == Mode.Idle || i.mode == Mode.Disconnected) OK else ACCENT))
@@ -142,6 +141,11 @@ object HyperIsland {
         val v2 = JSONObject().apply {
             put("protocol", 1)
             put("business", "airplay_cast")
+            // Beta 2.1 修正：官方文件把 islandFirstFloat / timeout 列在「通知屬性」（param_v2 這一層），
+            // 之前誤放進 param_island，系統不認得 → 一直套用官方預設 true（每次都展開成大卡片）。
+            put("islandFirstFloat", pr.focusFirstFloat)
+            // 官方 timeout（分鐘）預設 720＝焦點通知卡片會留 12 小時；短暫模式改成最少 1 分鐘
+            if (brief) put("timeout", ((seconds + 59) / 60).coerceAtLeast(1))
             put("enableFloat", false)          // 不主動彈出，避免打斷使用者
             put("updatable", pr.focusUpdatable)
             put("ticker", "${i.name} · $status")
@@ -151,8 +155,7 @@ object HyperIsland {
                 put("type", 2)
                 put("title", i.name)
                 put("content", if (live) "$status · 音量 $vol" else status)
-                put("colorTitle", "#FFFFFF")
-                put("colorContent", "#FFFFFF")
+                // 不指定文字顏色：由系統依淺色 / 深色通知欄自動決定（以前寫死白色，淺色通知欄上會看不見）
             })
             if (live) {
                 put("progressInfo", JSONObject().apply {

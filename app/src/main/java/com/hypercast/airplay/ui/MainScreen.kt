@@ -4,22 +4,16 @@ package com.hypercast.airplay.ui
 import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.wrapContentWidth
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
-import com.hypercast.airplay.Haptics
-import com.hypercast.airplay.setHaptics
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,41 +22,44 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.runtime.collectAsState
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
-import com.hypercast.airplay.PinBroker
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -72,21 +69,24 @@ import androidx.core.view.WindowCompat
 import com.hypercast.airplay.AirPlayStore
 import com.hypercast.airplay.BuildConfig
 import com.hypercast.airplay.ChannelMode
-import com.hypercast.airplay.Role
-import com.hypercast.airplay.DeviceItem
 import com.hypercast.airplay.DelayStore
-import com.hypercast.airplay.IslandMode
-import com.hypercast.airplay.isFocus
-import com.hypercast.airplay.PrefsStore
+import com.hypercast.airplay.DeviceItem
+import com.hypercast.airplay.DiagCategory
 import com.hypercast.airplay.DiagLog
+import com.hypercast.airplay.Haptics
+import com.hypercast.airplay.IslandMode
 import com.hypercast.airplay.Phase
-import com.hypercast.airplay.PodKind
+import com.hypercast.airplay.PinBroker
+import com.hypercast.airplay.PrefsStore
 import com.hypercast.airplay.R
-import com.hypercast.airplay.Receiver
+import com.hypercast.airplay.Role
 import com.hypercast.airplay.SystemInfo
 import com.hypercast.airplay.UiState
+import com.hypercast.airplay.appleDeviceIcon
 import com.hypercast.airplay.buildItems
-import com.hypercast.airplay.podKind
+import com.hypercast.airplay.isFocus
+import com.hypercast.airplay.isHomePod
+import com.hypercast.airplay.setHaptics
 import kotlin.math.PI
 import kotlin.math.roundToInt
 
@@ -103,8 +103,13 @@ fun MainScreen(
     delayMs: Int,
     onDelay: (Int) -> Unit,
     diag: DiagLog.UiState,
+    permVersion: Int,
+    onDiagCategoryConsent: (DiagCategory, Boolean) -> Unit,
+    onDiagAgreeAll: (Boolean) -> Unit,
+    onDiagRequestPermission: (String) -> Unit,
     onDiagEnable: () -> Unit,
     onDiagDisable: () -> Unit,
+    onDiagRefresh: () -> Unit,
     onDiagExport: () -> Unit,
     onDiagClear: () -> Unit,
     onFeedback: () -> Unit,
@@ -112,6 +117,8 @@ fun MainScreen(
 ) {
     val palette = paletteFor(theme)
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
+
     val t = rememberInfiniteTransition(label = "scene").animateFloat(
         initialValue = 0f,
         targetValue = (2 * PI).toFloat(),
@@ -127,7 +134,9 @@ fun MainScreen(
             c.isAppearanceLightNavigationBars = !palette.dark
         }
     }
-    BackHandler(enabled = showSettings) { showSettings = false }
+    BackHandler(enabled = showDiagnostics || showSettings) {
+        if (showDiagnostics) showDiagnostics = false else showSettings = false
+    }
     var firstPhase by remember { mutableStateOf(true) }
     LaunchedEffect(state.phase) {
         if (firstPhase) { firstPhase = false; return@LaunchedEffect }
@@ -156,37 +165,282 @@ fun MainScreen(
                     .padding(horizontal = 20.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
-                if (showSettings) {
-                    SettingsPage(theme, onTheme, delayMs, onDelay, diag, onDiagEnable, onDiagDisable, onDiagExport, onDiagClear, onFeedback, onQuit) { showSettings = false }
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            GText("HyperCast", 38, FontWeight.Bold)
-                            GText("把 Android 的聲音串流到 AirPlay 裝置", 14, secondary = true)
-                        }
-                        CircleButton(R.drawable.ic_settings) { showSettings = true }
-                    }
-                    StatusPill(state)
-                    NowPlaying(state, onDisconnect, onVolume, onMute)
-                    if (state.phase == Phase.Streaming || state.phase == Phase.Connecting) {
-                        ChannelCard(state, onChannelMode)
-                    }
-                    GText("我的裝置", 24, FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
-                    if (state.phase == Phase.Streaming) {
-                        GText(
-                            "點另一台裝置可同時串流（最多 2 台），再點一次即移除。",
-                            12, secondary = true, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                when {
+                    showDiagnostics -> {
+                        DiagnosticsPage(
+                            diag = diag,
+                            permVersion = permVersion,
+                            onCategoryConsent = onDiagCategoryConsent,
+                            onAgreeAll = onDiagAgreeAll,
+                            onRequestPermission = onDiagRequestPermission,
+                            onEnable = onDiagEnable,
+                            onDisable = onDiagDisable,
+                            onRefresh = onDiagRefresh,
+                            onExport = onDiagExport,
+                            onClear = onDiagClear,
+                            onFeedback = onFeedback,
+                            onBack = { showDiagnostics = false },
                         )
                     }
-                    Devices(state, onToggle)
+                    showSettings -> {
+                        SettingsPage(
+                            theme = theme,
+                            onTheme = onTheme,
+                            delayMs = delayMs,
+                            onDelay = onDelay,
+                            diag = diag,
+                            onOpenDiagnostics = { showDiagnostics = true },
+                            onDiagDisable = onDiagDisable,
+                            onDiagExport = onDiagExport,
+                            onDiagClear = onDiagClear,
+                            onFeedback = onFeedback,
+                            onQuit = onQuit,
+                            onBack = { showSettings = false },
+                        )
+                    }
+                    else -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                GText("HyperCast", 38, FontWeight.Bold)
+                                GText("把 Android 的聲音串流到 AirPlay 裝置", 14, secondary = true)
+                            }
+                            CircleButton(R.drawable.ic_settings) { showSettings = true }
+                        }
+                        StatusPill(state)
+                        NowPlaying(state, onDisconnect, onVolume, onMute)
+                        if (state.phase == Phase.Streaming || state.phase == Phase.Connecting) {
+                            ChannelCard(state, onChannelMode)
+                        }
+                        GText("我的裝置", 24, FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+                        if (state.phase == Phase.Streaming) {
+                            GText(
+                                "點另一台裝置可同時串流（最多 2 台），再點一次即移除。",
+                                12, secondary = true, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                            )
+                        }
+                        Devices(state, onToggle)
+                    }
                 }
                 Spacer(Modifier.height(6.dp))
                 GText(
-                    "Designed & developed by ${BuildConfig.DEVELOPER}",
+                    "HyperCast v${BuildConfig.VERSION_NAME} · Designed & developed by ${BuildConfig.DEVELOPER}",
                     11, alpha = 0.55f, secondary = true,
                     modifier = Modifier.fillMaxWidth(), align = TextAlign.Center,
                 )
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- 診斷日誌與權限同意頁（HyperOS 4 風格）
+
+@Composable
+private fun DiagnosticsPage(
+    diag: DiagLog.UiState,
+    permVersion: Int,
+    onCategoryConsent: (DiagCategory, Boolean) -> Unit,
+    onAgreeAll: (Boolean) -> Unit,
+    onRequestPermission: (String) -> Unit,
+    onEnable: () -> Unit,
+    onDisable: () -> Unit,
+    onRefresh: () -> Unit,
+    onExport: () -> Unit,
+    onClear: () -> Unit,
+    onFeedback: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val p = LocalPalette.current
+    val ctx = LocalContext.current
+    val totalCount = DiagCategory.entries.size
+    val agreedCount = diag.consented.size
+    val allAgreed = diag.allConsented
+    // 讀取 permVersion 確保系統權限視窗返回後立即更新每項授權標籤
+    val ignoredPermTick = permVersion
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        CircleButton(R.drawable.ic_back, onClick = onBack)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            GText("診斷日誌與權限", 28, FontWeight.Bold)
+            GText("v${BuildConfig.VERSION_NAME} · 同意全部項目後才開始搜集", 12, secondary = true)
+        }
+    }
+
+    // 狀態與總控卡片
+    GlassCard(Modifier.fillMaxWidth(), radius = 28.dp) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    GText(
+                        when {
+                            diag.enabled -> "正在搜集診斷資料"
+                            allAgreed -> "已同意全部項目，可開始搜集"
+                            else -> "尚未開始搜集資料"
+                        },
+                        18, FontWeight.Bold,
+                    )
+                    GText(
+                        if (diag.enabled) "已記錄 ${diag.entries} 筆 · ${diag.sizeKb} KB · 地點：${diag.place.ifBlank { "未知地點" }}"
+                        else "已同意 $agreedCount / $totalCount 項。須逐項開啟同意（或點「全部同意」）才可啟用搜集。",
+                        12, secondary = true,
+                    )
+                }
+                Chip(if (diag.enabled) "記錄中" else "$agreedCount/$totalCount")
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                DialogButton(
+                    text = if (allAgreed) "全部取消" else "全部同意",
+                    filled = false,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        Haptics.toggle(!allAgreed)
+                        onAgreeAll(!allAgreed)
+                    },
+                )
+                if (diag.enabled) {
+                    DialogButton(
+                        text = "停止搜集",
+                        filled = true,
+                        modifier = Modifier.weight(1.35f),
+                        onClick = {
+                            Haptics.toggle(false)
+                            onDisable()
+                        },
+                    )
+                } else {
+                    DialogButton(
+                        text = if (allAgreed) "開始搜集資料" else "請先同意全部項目",
+                        filled = true,
+                        enabled = allAgreed,
+                        modifier = Modifier.weight(1.35f),
+                        onClick = {
+                            if (allAgreed) onEnable()
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    // 搜集資料清單與 HyperOS 4 風格圖示 + 權限狀態
+    GText(
+        "搜集項目與所需權限（共 $totalCount 項）",
+        13, FontWeight.SemiBold, secondary = true,
+        modifier = Modifier.padding(start = 6.dp, top = 2.dp),
+    )
+
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            DiagCategory.entries.forEachIndexed { idx, cat ->
+                val agreed = cat in diag.consented
+                val needsPrompt = cat.requiresRuntimePrompt()
+                val granted = remember(cat, ignoredPermTick) { cat.isPermissionGranted(ctx) }
+
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .hapticClickable(click = false) {
+                            Haptics.toggle(!agreed)
+                            onCategoryConsent(cat, !agreed)
+                        }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    HyperOsDiagIcon(cat = cat, size = 46.dp, modifier = Modifier.padding(top = 2.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        GText(cat.title, 16, FontWeight.SemiBold)
+                        GText(cat.summary, 12, secondary = true)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(top = 2.dp),
+                        ) {
+                            val badgeColor = when {
+                                needsPrompt && !granted -> p.accent
+                                needsPrompt && granted -> Color(0xFF16A34A)
+                                else -> p.text2
+                            }
+                            val badgeBg = when {
+                                needsPrompt && !granted -> p.accent.copy(alpha = 0.16f)
+                                needsPrompt && granted -> Color(0xFF16A34A).copy(alpha = 0.16f)
+                                else -> p.chip
+                            }
+                            val permStatus = when {
+                                needsPrompt && !granted -> "未授權 · 點此授權"
+                                needsPrompt && granted -> "已授權"
+                                else -> "自動 / 無需額外授權"
+                            }
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(badgeBg)
+                                    .border(0.6.dp, badgeColor.copy(alpha = 0.35f), RoundedCornerShape(50))
+                                    .then(
+                                        if (needsPrompt && !granted && cat.runtimePermission != null) {
+                                            Modifier.hapticClickable { onRequestPermission(cat.runtimePermission) }
+                                        } else Modifier
+                                    )
+                                    .padding(horizontal = 9.dp, vertical = 3.dp)
+                            ) {
+                                BasicText(
+                                    permStatus,
+                                    style = TextStyle(color = badgeColor, fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                                )
+                            }
+                        }
+                        GText("要求權限：${cat.permissionLabel}", 11, secondary = true, alpha = 0.85f)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Box(Modifier.padding(top = 8.dp)) {
+                        GlassToggle(agreed)
+                    }
+                }
+                if (idx < DiagCategory.entries.lastIndex) Divider()
+            }
+        }
+    }
+
+    // 匯出與回報操作卡片
+    GText("日誌操作與回報", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 2.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            if (diag.enabled) {
+                ActionRow("立即重新採樣系統快照", "把目前的網路、Wi-Fi、音訊、通知、電源與裝置狀態再記錄一次", onRefresh)
+                Divider()
+            }
+            ActionRow(
+                "傳送意見與日誌給開發者",
+                if (diag.entries > 0) "開啟郵件 App，自動附上本次診斷日誌（收件人：${com.hypercast.airplay.FeedbackMail.EMAIL}）"
+                else "尚無日誌資料，請先同意所有項目並開始搜集",
+                onFeedback,
+            )
+            Divider()
+            ActionRow(
+                "匯出日誌檔（.log）",
+                if (diag.entries > 0) "檔名含版本、時間與概略地點：${diag.place.ifBlank { "未知地點" }}"
+                else "尚無可匯出的紀錄",
+                onExport,
+            )
+            if (diag.entries > 0) {
+                Divider()
+                ActionRow("清除本機日誌", "立即刪除手機上已記錄的所有診斷內容", onClear)
+            }
+        }
+    }
+
+    // 隱私與安全說明
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            GText("隱私與資料保護", 15, FontWeight.Bold)
+            GText(
+                "• 日誌僅儲存在本機 App 私有空間，絕不會自動上傳；只有你自行按「匯出」或「傳送」才會離開手機。\n" +
+                    "• 寫入前一律自動遮蔽：IPv4 末段、IPv6 位址、MAC 位址、UUID。\n" +
+                    "• 絕不搜集：播放中的音訊內容、通知內文、通訊錄、相簿、配對碼（PIN）、加密金鑰、Wi-Fi 名稱（SSID）與密碼。\n" +
+                    "• 取消任一項同意會立即停止搜集；容量上限約 1.5 MB，超過自動捨棄最舊紀錄。",
+                12, secondary = true,
+            )
         }
     }
 }
@@ -200,7 +454,7 @@ private fun SettingsPage(
     delayMs: Int,
     onDelay: (Int) -> Unit,
     diag: DiagLog.UiState,
-    onDiagEnable: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     onDiagDisable: () -> Unit,
     onDiagExport: () -> Unit,
     onDiagClear: () -> Unit,
@@ -210,7 +464,6 @@ private fun SettingsPage(
 ) {
     val p = LocalPalette.current
     val ctx = LocalContext.current
-    var showConsent by rememberSaveable { mutableStateOf(false) }
     val prefs by PrefsStore.state.collectAsState()
 
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -274,32 +527,36 @@ private fun SettingsPage(
         }
     }
 
-    GText("診斷", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+    GText("診斷與回報日誌", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
     GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
         Column {
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .hapticClickable(click = false) { Haptics.toggle(!diag.enabled); if (diag.enabled) onDiagDisable() else showConsent = true }
+                    .hapticClickable { onOpenDiagnostics() }
                     .padding(horizontal = 18.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    GText("日誌記錄", 17, FontWeight.SemiBold)
+                    GText("診斷日誌與權限管理", 17, FontWeight.SemiBold)
                     GText(
-                        if (diag.enabled) "記錄中 · ${diag.entries} 筆 · ${diag.sizeKb} KB"
-                        else "關閉。開啟後會記錄連線過程，協助找出連線失敗的原因",
+                        if (diag.enabled) "記錄中 · ${diag.entries} 筆 · ${diag.sizeKb} KB · 點此管理項目與權限"
+                        else "已同意 ${diag.consented.size}/${DiagCategory.entries.size} 項 · 須逐項或全部同意後才開始搜集",
                         12, secondary = true,
                     )
                 }
-                Spacer(Modifier.width(12.dp))
-                GlassToggle(diag.enabled)
+                Spacer(Modifier.width(10.dp))
+                Chip(if (diag.enabled) "記錄中" else "前往設定")
+            }
+            if (diag.enabled) {
+                Divider()
+                ActionRow("暫停日誌記錄", "停止記錄新的事件（保留已記錄資料）", onDiagDisable)
             }
             if (diag.enabled || diag.entries > 0) {
                 Divider()
                 ActionRow(
                     "匯出日誌檔（.log）",
-                    "檔名含時間日期與地點：" + if (diag.place.isBlank()) "未知地點" else diag.place,
+                    "檔名含版本、時間日期與地點：" + if (diag.place.isBlank()) "未知地點" else diag.place,
                     onDiagExport,
                 )
                 Divider()
@@ -307,17 +564,10 @@ private fun SettingsPage(
             }
             Divider()
             GText(
-                "日誌只存在這支手機，不會自動上傳；只有你自己匯出並傳給別人，資料才會離開手機。",
+                "日誌只存在這支手機，不會自動上傳；必須在診斷頁面完成所有項目同意後才會開始搜集。",
                 12, secondary = true, modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
             )
         }
-    }
-
-    if (showConsent) {
-        ConsentDialog(
-            onAgree = { showConsent = false; onDiagEnable() },
-            onCancel = { showConsent = false },
-        )
     }
 
     GText("音訊", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
@@ -333,7 +583,7 @@ private fun SettingsPage(
                 Column(Modifier.weight(1f)) {
                     GText("同步手機音量鍵", 17, FontWeight.SemiBold)
                     GText(
-                        "按手機音量鍵時，接收端音量一起加減。若換歌時音量忽大忽小，可先關掉這個試試（有些播放器 / 系統功能會自己改手機音量）",
+                        "按手機音量鍵時，接收端音量一起加減。關閉後 HyperCast 完全不監聽手機音量（不註冊任何接收器）。若換歌時音量忽大忽小，或想排查通知異常，可先關掉試試",
                         12, secondary = true,
                     )
                 }
@@ -383,7 +633,7 @@ private fun SettingsPage(
     GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
         Column {
             val modes = IslandMode.values()
-            modes.forEachIndexed { i, mode ->
+            modes.forEachIndexed { _, mode ->
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -406,7 +656,6 @@ private fun SettingsPage(
                     prefs.idleIsland,
                 ) { PrefsStore.setIdleIsland(ctx, it) }
                 Divider()
-                // ---- 焦點通知進階：每一項對應小米官方文件的一個欄位 / 一種送法，用來找出是哪一項讓其他 App 的一般通知被隱藏 ----
                 GText(
                     "焦點通知進階（用來排查「其他 App 的一般通知被隱藏」，一次只改一項測試最容易找出原因）",
                     12, FontWeight.SemiBold, secondary = true,
@@ -476,7 +725,6 @@ private fun SettingsPage(
 
     // ---------------- 意見回饋
     var fbStep by rememberSaveable { mutableStateOf(0) }       // 1 需先開啟記錄 · 2 還沒有內容 · 3 寄信前提醒
-    var showConsentView by rememberSaveable { mutableStateOf(false) }
     GText("意見回饋", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
     GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
         Column {
@@ -487,15 +735,17 @@ private fun SettingsPage(
             Divider()
             ActionRow(
                 "傳送意見與日誌給開發者",
-                "開啟郵件 App，自動附上日誌檔；信件主旨會自動使用日誌的時間",
+                "開啟郵件 App，自動附上日誌檔；信件主旨會自動帶入版本與日誌時間",
             ) { fbStep = when { !diag.enabled -> 1; diag.entries == 0 -> 2; else -> 3 } }
         }
     }
     when (fbStep) {
         1 -> NoticeDialog(
             "尚未開啟日誌記錄",
-            "要附上日誌，需要先開啟記錄，並重現一次問題。\n\n開啟前請先閱讀並同意《日誌同意書》。開啟後約 5 分鐘，我會通知你回來儲存或傳送日誌。",
-            "閱讀同意書", "取消", onConfirm = { fbStep = 0; showConsent = true }, onCancel = { fbStep = 0 },
+            "要附上診斷日誌，請先前往「診斷日誌與權限」頁面，檢視各項搜集資料與所需權限並完成同意，再重現一次問題。",
+            "前往診斷頁面", "取消",
+            onConfirm = { fbStep = 0; onOpenDiagnostics() },
+            onCancel = { fbStep = 0 },
         )
         2 -> NoticeDialog(
             "還沒有記錄到內容",
@@ -504,16 +754,12 @@ private fun SettingsPage(
         )
         3 -> NoticeDialog(
             "寄信前請注意",
-            "寄出前請確認你已閱讀並同意《日誌同意書》。這封信會附上日誌檔：IP 末段、MAC、UUID 已遮蔽，不含配對碼、金鑰、音訊內容與 Wi-Fi 名稱。\n\n信件主旨會自動使用日誌的時間，請不要修改，方便對照。",
-            "同意並寄信", "取消", onConfirm = { fbStep = 0; onFeedback() }, onCancel = { fbStep = 0 },
-            neutral = "查看同意書", onNeutral = { showConsentView = true },
-        )
-    }
-    if (showConsentView) {
-        ConsentDialog(
-            onAgree = { showConsentView = false },
-            onCancel = { showConsentView = false },
-            agreeText = "我知道了", cancelText = "關閉",
+            "這封信會附上你已同意搜集的診斷日誌：IP 末段、IPv6、MAC、UUID 已遮蔽，不含配對碼、金鑰、音訊內容與 Wi-Fi 名稱。\n\n信件主旨會自動帶入版本與日誌時間，請不要修改，方便對照。",
+            "同意並寄信", "取消",
+            onConfirm = { fbStep = 0; onFeedback() },
+            onCancel = { fbStep = 0 },
+            neutral = "檢視搜集項目與權限",
+            onNeutral = { fbStep = 0; onOpenDiagnostics() },
         )
     }
 
@@ -572,8 +818,10 @@ private fun GlassToggle(on: Boolean) {
             .width(52.dp)
             .height(30.dp)
             .clip(RoundedCornerShape(15.dp))
-            .background(Brush.horizontalGradient(listOf(p.track, p.accent.copy(alpha = 0.35f + 0.65f * grow)))
-                .let { if (on) it else Brush.horizontalGradient(listOf(p.track, p.track)) }),
+            .background(
+                Brush.horizontalGradient(listOf(p.track, p.accent.copy(alpha = 0.35f + 0.65f * grow)))
+                    .let { if (on) it else Brush.horizontalGradient(listOf(p.track, p.track)) }
+            ),
     ) {
         Box(
             Modifier
@@ -600,86 +848,27 @@ private fun ActionRow(title: String, desc: String?, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ConsentBlock(title: String, body: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        GText(title, 15, FontWeight.Bold)
-        GText(body, 13, secondary = true)
-    }
-}
-
-@Composable
-private fun DialogButton(text: String, filled: Boolean, modifier: Modifier, onClick: () -> Unit) {
+private fun DialogButton(
+    text: String,
+    filled: Boolean,
+    modifier: Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
     val p = LocalPalette.current
     Box(
         modifier
             .height(48.dp)
+            .alpha(if (enabled) 1f else 0.45f)
             .clip(RoundedCornerShape(24.dp))
             .background(if (filled) p.accent else p.chip)
-            .hapticClickable(onClick = onClick),
+            .then(if (enabled) Modifier.hapticClickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
         if (filled) {
-            BasicText(text, style = TextStyle(color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold))
+            BasicText(text, style = TextStyle(color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold))
         } else {
-            GText(text, 16, FontWeight.SemiBold)
-        }
-    }
-}
-
-/** 開啟日誌前的同意書：說明收集的資料、用途與使用者權益。 */
-@Composable
-private fun ConsentDialog(
-    onAgree: () -> Unit,
-    onCancel: () -> Unit,
-    agreeText: String = "同意並開始記錄",
-    cancelText: String = "不同意",
-) {
-    val p = LocalPalette.current
-    Dialog(onDismissRequest = onCancel, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(
-            Modifier
-                .padding(horizontal = 18.dp)
-                .fillMaxWidth()
-                .heightIn(max = 640.dp)
-                .clip(RoundedCornerShape(30.dp))
-                .background(if (p.dark) Color(0xF21C1C1E) else Color(0xF7FFFFFF))
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            GText("開啟日誌記錄前，請先閱讀", 20, FontWeight.Bold)
-            Column(
-                Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                ConsentBlock(
-                    "用途",
-                    "只用來分析 AirPlay 連線失敗或沒有聲音的原因，協助開發者除錯。不會用於廣告、行銷或其他用途。",
-                )
-                ConsentBlock(
-                    "將會收集的資料",
-                    "1. 手機資料：品牌、型號、Android 與 HyperOS 版本、App 版本、語言、時區。\n" +
-                        "2. 網路狀態：目前是 Wi-Fi 或行動網路、是否使用 VPN、Wi-Fi 頻段與訊號強度（不含 Wi-Fi 名稱與密碼）。\n" +
-                        "3. AirPlay 裝置資料：裝置名稱、型號、功能旗標、區網廣播內容、連接埠；IP 位址最後一段與 MAC 位址會被遮蔽。\n" +
-                        "4. 連線過程：配對與各階段的回應碼、耗時、錯誤訊息與例外堆疊、串流封包統計、近 10 秒音訊最大振幅（只是一個數字，用來判斷是否擷取到靜音）。\n" +
-                        "5. 概略位置（選用）：需要你授權「概略位置」，每次連線時讀取一次，座標四捨五入到約 1 公里，只用來為日誌檔命名；不會持續追蹤。轉換成地名時，系統的地理編碼服務可能會處理這組座標。不授權也能使用，檔名會標示為「未知地點」。",
-                )
-                ConsentBlock(
-                    "不會收集",
-                    "播放的音訊內容、通知內容、通訊錄、相簿、帳號密碼、配對碼與加密金鑰、Wi-Fi 名稱與密碼。",
-                )
-                ConsentBlock(
-                    "資料如何處理",
-                    "日誌只存放在本機 App 私有空間，不會自動上傳。只有你按下「匯出日誌檔」並自行分享給別人，內容才會離開手機。容量上限約 1 MB，超過時會自動捨棄最舊的紀錄。解除安裝 App 時會一併刪除。",
-                )
-                ConsentBlock(
-                    "你的權益",
-                    "不同意不影響 App 的任何功能。你可以隨時在「設定 → 診斷」關閉記錄、清除已記錄的內容，也可以在系統設定撤回位置權限。匯出前請自行確認日誌內容再決定是否分享。",
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                DialogButton(cancelText, false, Modifier.weight(1f), onCancel)
-                DialogButton(agreeText, true, Modifier.weight(1.4f), onAgree)
-            }
+            GText(text, 15, FontWeight.SemiBold)
         }
     }
 }
@@ -701,7 +890,7 @@ private fun CircleButton(icon: Int, size: Int = 46, onClick: () -> Unit) {
     }
 }
 
-/** 仿 Apple Music「正在播放」：大封面、標題、拉桿與圓形控制鍵。 */
+/** 仿 Apple Music「正在播放」：大封面（顯示蘋果官方裝置圖示）、標題、拉桿與圓形控制鍵。 */
 @Composable
 private fun NowPlaying(
     state: UiState,
@@ -727,6 +916,14 @@ private fun NowPlaying(
                 Phase.Error -> state.message ?: "請再試一次"
                 Phase.Idle -> state.message ?: "從下方選一台裝置開始"
             }
+            val artIcon = if (state.targets.isNotEmpty()) {
+                appleDeviceIcon(
+                    state.targets.map { it.rx },
+                    isPair = state.targets.any { it.pair } || state.targets.count { it.rx.isHomePod } >= 2,
+                )
+            } else {
+                R.drawable.ic_music
+            }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val art = if (streaming) {
@@ -738,7 +935,7 @@ private fun NowPlaying(
                 Box(
                     Modifier.size(84.dp).clip(RoundedCornerShape(22.dp)).background(art),
                     contentAlignment = Alignment.Center,
-                ) { GIcon(R.drawable.ic_music, if (streaming) Color.White else p.text2, 34.dp) }
+                ) { GIcon(artIcon, if (streaming) Color.White else p.text2, 40.dp) }
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
                     GText(title, 22, FontWeight.Bold)
@@ -805,12 +1002,11 @@ private fun Devices(state: UiState, onToggle: (DeviceItem) -> Unit) {
 
 /**
  * 串流中的聲道卡片：
- *  - 任一台本身就是 HomePod 立體聲組 → 提醒「已配對立體聲喇叭」，左右聲道由組內兩顆負責，不能再拆
+ *  - 任一台本身就是 HomePod 立體聲組 → 顯示「HomePod 立體聲組」，左右聲道由組內兩顆負責，不能再拆
  *  - 兩台都是單顆喇叭 → 讓你選：兩台都播完整立體聲 / 左右聲道分開（A左 B右 / A右 B左）
  */
 @Composable
 private fun ChannelCard(state: UiState, onMode: (ChannelMode) -> Unit) {
-    val p = LocalPalette.current
     val t = state.targets
     val pairs = t.filter { it.pair }
     if (t.size < 2 && pairs.isEmpty()) return
@@ -818,10 +1014,10 @@ private fun ChannelCard(state: UiState, onMode: (ChannelMode) -> Unit) {
     GlassCard(Modifier.fillMaxWidth(), radius = 30.dp) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (pairs.isNotEmpty()) {
-                GText("已配對立體聲喇叭", 17, FontWeight.Bold)
+                GText("HomePod 立體聲組", 17, FontWeight.Bold)
                 GText(
                     pairs.joinToString("、") { "「${it.rx.name}」" } +
-                        "是 HomePod 組合：App 會直接連到組內每一顆 HomePod（和 Base 相同，不經過 Apple TV），" +
+                        "屬於 HomePod 立體聲組：App 會直接連到組內每一顆 HomePod（不經過 Apple TV），" +
                         "左右聲道由 HomePod 自己分配，所以不能再拆成左 / 右。" +
                         if (t.size >= 2) "另一台會同時播放完整立體聲。" else "",
                     13, secondary = true,
@@ -922,7 +1118,6 @@ private fun PinDialog(req: com.hypercast.airplay.PinRequest) {
 /** 連線狀態膠囊：呼吸的狀態點 + 文字（HyperOS 4「生命感」的小呼吸）。 */
 @Composable
 private fun StatusPill(state: UiState) {
-    val p = LocalPalette.current
     val (label, dot) = when (state.phase) {
         Phase.Idle -> "未連接" to Color(0xFF9AA0AC)
         Phase.Connecting -> "連線中…" to Color(0xFFFFB84D)
@@ -980,10 +1175,10 @@ private fun NoticeDialog(
         ) {
             GText(title, 20, FontWeight.Bold)
             GText(body, 14, secondary = true)
-            if (neutral != null) DialogButton(neutral, false, Modifier.fillMaxWidth(), onNeutral)
+            if (neutral != null) DialogButton(neutral, false, Modifier.fillMaxWidth(), onClick = onNeutral)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                if (cancel != null) DialogButton(cancel, false, Modifier.weight(1f), onCancel)
-                DialogButton(confirm, true, Modifier.weight(1.3f), onConfirm)
+                if (cancel != null) DialogButton(cancel, false, Modifier.weight(1f), onClick = onCancel)
+                DialogButton(confirm, true, Modifier.weight(1.3f), onClick = onConfirm)
             }
         }
     }

@@ -21,6 +21,7 @@ import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -96,6 +97,18 @@ class CastService : Service() {
     private var phoneVol = -1
     private var volReceiver: BroadcastReceiver? = null
     private var volObserver: ContentObserver? = null
+    private var volMirrorOn = false
+
+    /**
+     * Beta 2.1：「同步手機音量鍵」關閉時，完全不註冊音量廣播接收器與系統設定觀察者（以前只是收到事件後忽略）。
+     * 這樣開關才是真正的 A/B 測試：關掉＝HyperCast 完全不碰手機音量。串流中切換開關會立刻生效。
+     */
+    private fun syncVolumeMirror() {
+        val want = running && PrefsStore.state.value.mirrorVolume
+        if (want == volMirrorOn) return
+        if (want) startVolumeMirror() else stopVolumeMirror()
+        DiagLog.d("VOL", "手機音量監聽：${if (want) "已啟用" else "已完全停用（沒有註冊任何接收器 / 觀察者）"}")
+    }
 
     private fun startVolumeMirror() {
         stopVolumeMirror()
@@ -125,6 +138,7 @@ class CastService : Service() {
         } catch (e: Exception) {
             DiagLog.d("CAST", "音量觀察者註冊失敗：${e.message}")
         }
+        volMirrorOn = true
     }
 
     private fun stopVolumeMirror() {
@@ -133,6 +147,7 @@ class CastService : Service() {
         volObserver?.let { try { contentResolver.unregisterContentObserver(it) } catch (_: Exception) {} }
         volObserver = null
         phoneVol = -1
+        volMirrorOn = false
     }
 
     private fun onPhoneVolumeChanged() {
@@ -192,7 +207,6 @@ class CastService : Service() {
         // Android 14+：必須先進入 mediaProjection 前景狀態，才能取得 MediaProjection
         nm.cancel(NOTIF_ID_IDLE)
         islandSig = ""
-        startVolumeMirror()
         startForeground(NOTIF_ID, buildNotification(AirPlayStore.state.value),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
 
@@ -208,6 +222,10 @@ class CastService : Service() {
         slots.clear()
         targets.forEach { slots += Slot(it.rx, it.role, it.pair) }
         running = true
+        syncVolumeMirror()
+        // 診斷：記下「通知被擋」時最相關的環境（MediaProjection 已啟動；Android 15+ 的螢幕分享保護會隱藏通知內容）
+        DiagLog.d("CAST", "環境：Android SDK ${Build.VERSION.SDK_INT}｜通知模式=${PrefsStore.state.value.island}｜" +
+            "同步音量鍵=${PrefsStore.state.value.mirrorVolume}｜焦點協定=${HyperIsland.protocol(this)}｜MediaProjection 已啟動")
         launchNotificationLoop()
         worker = Thread({ runCast(mp) }, "cast-worker").also { it.start() }
     }
@@ -232,6 +250,7 @@ class CastService : Service() {
                     }
                 }
                 if (s.targets.any { it.state == TargetState.Streaming }) LastStore.save(this@CastService, s.targets)
+                main.post { syncVolumeMirror() }   // 「同步手機音量鍵」開關改變時，立刻註冊 / 取消監聽
                 delay(600)   // 通知更新合併：滑動音量時太頻繁會讓系統通知列卡住
                 if (!running) return@collectLatest
                 val mode = PrefsStore.state.value.island
@@ -515,16 +534,9 @@ class CastService : Service() {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
     )
 
-    /** 連接的裝置圖示：HomePod / HomePod mini / Apple TV / 一般 AirPlay。 */
-    private fun deviceIcon(rx: List<Receiver>): Int {
-        val m = rx.firstOrNull()?.model ?: ""
-        return when {
-            m.startsWith("AudioAccessory5") -> R.drawable.ic_homepod_mini
-            m.startsWith("AudioAccessory") -> R.drawable.ic_homepod
-            m.startsWith("AppleTV") -> R.drawable.ic_tv
-            else -> R.drawable.ic_airplay
-        }
-    }
+    /** 連接的裝置圖示：使用蘋果官方 SF Symbols 風格（單顆／兩顆 HomePod 立體聲組／HomePod mini／Apple TV／AirPlay）。 */
+    private fun deviceIcon(targets: List<Target>): Int =
+        appleDeviceIcon(targets.map { it.rx }, isPair = targets.any { it.pair } || targets.count { it.rx.isHomePod } >= 2)
 
     // ---- HyperIsland（上島）----
     // 不再使用小米焦點通知（miui.focus.param）：它會讓其他 App 的通知被隱藏、清不掉。
@@ -604,7 +616,7 @@ class CastService : Service() {
             .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, title)
             .putString(android.media.MediaMetadata.METADATA_KEY_ARTIST, "$sub · ${if (s.muted) "靜音" else "音量 $pct%"}")
             .putString(android.media.MediaMetadata.METADATA_KEY_ALBUM, "HyperCast")
-        artFor(deviceIcon(s.targets.map { it.rx }))?.let { md.putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
+        artFor(deviceIcon(s.targets))?.let { md.putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
         ms.setMetadata(md.build())
         val keys = PrefsStore.state.value.mediaKeys
         // 預設永遠回報「播放中」，系統就沒有理由去「暫停」它；只有打開「播放・暫停＝靜音」時，靜音才顯示成暫停
@@ -663,7 +675,7 @@ class CastService : Service() {
             .addAction(act(R.drawable.ic_vol_up, "音量+", ACTION_VOL_UP))
             .addAction(act(R.drawable.ic_stop, "中斷", ACTION_STOP))
         if (android.os.Build.VERSION.SDK_INT >= 31) b.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
-        artFor(deviceIcon(s.targets.map { it.rx }))?.let { b.setLargeIcon(it) }
+        artFor(deviceIcon(s.targets))?.let { b.setLargeIcon(it) }
         return b.build()
     }
 
@@ -719,7 +731,7 @@ class CastService : Service() {
             .setSmallIcon(R.drawable.ic_airplay)
             .setContentTitle(title)
             .setContentText("$sub · $volTxt")
-            .setOngoing(true)
+            .setOngoing(false)       // 可以滑掉；串流不受影響，音量 / 狀態更新時會再出現
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setStyle(Notification.DecoratedCustomViewStyle())
@@ -753,7 +765,7 @@ class CastService : Service() {
                 s.playing -> HyperIsland.Mode.Playing
                 else -> HyperIsland.Mode.Connected
             },
-            name = targetsTitle(s), iconRes = deviceIcon(s.targets.map { it.rx }),
+            name = targetsTitle(s), iconRes = deviceIcon(s.targets),
             volumePct = pct, muted = s.muted,
         )
     }

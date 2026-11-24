@@ -378,8 +378,9 @@ private fun DiagnosticsPage(
                                     .background(badgeBg)
                                     .border(0.6.dp, badgeColor.copy(alpha = 0.35f), RoundedCornerShape(50))
                                     .then(
-                                        if (needsPrompt && !granted && cat.runtimePermission != null) {
-                                            Modifier.hapticClickable { onRequestPermission(cat.runtimePermission) }
+                                        val perm = cat.runtimePermission
+                                        if (needsPrompt && !granted && perm != null) {
+                                            Modifier.hapticClickable { onRequestPermission(perm) }
                                         } else Modifier
                                     )
                                     .padding(horizontal = 9.dp, vertical = 3.dp)

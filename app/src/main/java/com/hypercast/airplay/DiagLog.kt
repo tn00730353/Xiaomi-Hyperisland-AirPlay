@@ -15,7 +15,7 @@ import android.location.LocationManager
 import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.net.wifi.WifiInfo
+import android.net.wifi.ScanResult
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
@@ -350,7 +350,7 @@ object DiagLog {
             d("SYS", "螢幕: ${dm.widthPixels}x${dm.heightPixels} @ ${dm.densityDpi}dpi（density=${dm.density}）｜開機時長 ${SystemClock.elapsedRealtime() / 60000} 分鐘")
         }
         runCatching {
-            val am = c.getSystemService(ActivityManager::class.java)
+            val am = c.getSystemService(ActivityManager::class.java) ?: return@runCatching
             val mi = ActivityManager.MemoryInfo()
             am.getMemoryInfo(mi)
             val rt = Runtime.getRuntime()
@@ -384,7 +384,7 @@ object DiagLog {
                 d("NET", "介面=${lp.interfaceName}｜MTU=${lp.mtu}｜DNS數=${lp.dnsServers.size}｜本機位址=$addrs")
             }
             @Suppress("DEPRECATION")
-            val wi = (c.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).connectionInfo
+            val wi = (c.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)?.connectionInfo
             if (wi != null && wi.frequency > 0) {
                 val band = when {
                     wi.frequency >= 5925 -> "6 GHz"
@@ -394,10 +394,10 @@ object DiagLog {
                 val std = if (Build.VERSION.SDK_INT >= 30) {
                     val code = wi.wifiStandard
                     when {
-                        Build.VERSION.SDK_INT >= 33 && code == WifiInfo.WIFI_STANDARD_11BE -> "Wi-Fi 7 (802.11be)"
-                        code == WifiInfo.WIFI_STANDARD_11AX -> "Wi-Fi 6/6E (802.11ax)"
-                        code == WifiInfo.WIFI_STANDARD_11AC -> "Wi-Fi 5 (802.11ac)"
-                        code == WifiInfo.WIFI_STANDARD_11N -> "Wi-Fi 4 (802.11n)"
+                        Build.VERSION.SDK_INT >= 33 && code == ScanResult.WIFI_STANDARD_11BE -> "Wi-Fi 7 (802.11be)"
+                        code == ScanResult.WIFI_STANDARD_11AX -> "Wi-Fi 6/6E (802.11ax)"
+                        code == ScanResult.WIFI_STANDARD_11AC -> "Wi-Fi 5 (802.11ac)"
+                        code == ScanResult.WIFI_STANDARD_11N -> "Wi-Fi 4 (802.11n)"
                         else -> "standard=$code"
                     }
                 } else "API<30"
@@ -426,7 +426,7 @@ object DiagLog {
     private fun collectAudioPipeline(c: Context) {
         if (!isCategoryAllowed(DiagCategory.AUDIO_CAPTURE)) return
         runCatching {
-            val am = c.getSystemService(AudioManager::class.java)
+            val am = c.getSystemService(AudioManager::class.java) ?: return@runCatching
             val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
             val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
             val outs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
@@ -442,7 +442,7 @@ object DiagLog {
     private fun collectIslandAndNotif(c: Context) {
         if (!isCategoryAllowed(DiagCategory.ISLAND_NOTIF)) return
         runCatching {
-            val nm = c.getSystemService(NotificationManager::class.java)
+            val nm = c.getSystemService(NotificationManager::class.java) ?: return@runCatching
             val proto = HyperIsland.protocol(c)
             val canFocus = HyperIsland.canShow(c)
             val pr = PrefsStore.state.value
@@ -460,8 +460,8 @@ object DiagLog {
     private fun collectPowerAndBackground(c: Context) {
         if (!isCategoryAllowed(DiagCategory.POWER_BACKGROUND)) return
         runCatching {
-            val pm = c.getSystemService(PowerManager::class.java)
-            val am = c.getSystemService(ActivityManager::class.java)
+            val pm = c.getSystemService(PowerManager::class.java) ?: return@runCatching
+            val am = c.getSystemService(ActivityManager::class.java) ?: return@runCatching
             val bat = c.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             val level = bat?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
             val scale = bat?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100

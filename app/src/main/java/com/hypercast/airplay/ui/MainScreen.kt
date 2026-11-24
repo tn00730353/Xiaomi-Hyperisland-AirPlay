@@ -372,13 +372,13 @@ private fun DiagnosticsPage(
                                 needsPrompt && granted -> "已授權"
                                 else -> "自動 / 無需額外授權"
                             }
+                            val perm = cat.runtimePermission
                             Box(
                                 Modifier
                                     .clip(RoundedCornerShape(50))
                                     .background(badgeBg)
                                     .border(0.6.dp, badgeColor.copy(alpha = 0.35f), RoundedCornerShape(50))
                                     .then(
-                                        val perm = cat.runtimePermission
                                         if (needsPrompt && !granted && perm != null) {
                                             Modifier.hapticClickable { onRequestPermission(perm) }
                                         } else Modifier

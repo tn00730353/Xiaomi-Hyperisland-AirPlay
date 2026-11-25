@@ -12,8 +12,8 @@ android {
         applicationId = "com.hypercast.airplay"
         minSdk = 29          // AudioPlaybackCapture 需要 API 29+
         targetSdk = 35
-        versionCode = 29
-        versionName = "2.0.0 Beta4"
+        versionCode = 30
+        versionName = "2.0.0 Beta5"
         buildConfigField("String", "DEVELOPER", "\"DylanLiao\"")
     }
 

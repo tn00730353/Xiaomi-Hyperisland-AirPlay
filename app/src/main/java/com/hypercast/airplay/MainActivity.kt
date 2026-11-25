@@ -68,67 +68,6 @@ class MainActivity : ComponentActivity() {
             }.start()
         }
 
-    // ---------------- Beta4：通知被擋診斷實驗（只擷取、不串流）
-    private val probeProjectionLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
-            val d = r.data
-            if (r.resultCode == RESULT_OK && d != null) ProbeService.start(this, r.resultCode, d)
-            else ProbeStore.set(ProbeStage.Idle, "沒有取得螢幕擷取授權")
-        }
-    private val probeMicLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { launchProbeProjection() }
-
-    private fun startProbe() {
-        if (AirPlayStore.state.value.phase != Phase.Idle) {
-            Toast.makeText(this, "請先中斷串流，再做診斷實驗", Toast.LENGTH_LONG).show()
-            return
-        }
-        ProbeStore.reset()
-        val mic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        if (mic) launchProbeProjection() else probeMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
-    }
-
-    private fun launchProbeProjection() {
-        val pm = getSystemService(MediaProjectionManager::class.java)
-        probeProjectionLauncher.launch(pm.createScreenCaptureIntent())
-    }
-
-    private fun probeAnswer(blocked: Boolean) {
-        val st = ProbeStore.state.value
-        when (st.stage) {
-            ProbeStage.A -> {
-                ProbeStore.state.value = st.copy(answerA = blocked)
-                DiagLog.d("PROBE", "階段 A 回答：通知${if (blocked) "被擋住" else "正常"}")
-                if (blocked) finishProbe() else ProbeService.audio(this)
-            }
-            ProbeStage.B -> {
-                ProbeStore.state.value = st.copy(answerB = blocked)
-                DiagLog.d("PROBE", "階段 B 回答：通知${if (blocked) "被擋住" else "正常"}")
-                finishProbe()
-            }
-            else -> {}
-        }
-    }
-
-    private fun finishProbe() {
-        val st = ProbeStore.state.value
-        ProbeStore.state.value = st.copy(stage = ProbeStage.Done)
-        ProbeService.stop(this)
-        fun r(v: Boolean?) = when (v) { true -> "被擋住"; false -> "正常"; null -> "未做" }
-        DiagLog.d("PROBE", "實驗結果：階段A（只有螢幕擷取授權）=${r(st.answerA)}｜階段B（再加音訊擷取）=${r(st.answerB)}")
-    }
-
-    private fun abortProbe() {
-        ProbeService.stop(this)
-        ProbeStore.reset()
-    }
-
-    private fun markIssue() {
-        if (!DiagLog.enabled) return
-        DiagCollector.marker(this)
-        Toast.makeText(this, "已標記，並記下目前的通知 / 鎖屏狀態", Toast.LENGTH_SHORT).show()
-    }
-
     /** 同意頁按下「同意並開始記錄」：每一項都已同意才會走到這裡。 */
     private fun enableDiag(items: Set<DiagItem>) {
         if (!items.containsAll(DiagItem.all)) return          // 少一項都不開始
@@ -290,10 +229,6 @@ class MainActivity : ComponentActivity() {
                 onDiagExport = ::exportDiag,
                 onDiagClear = { DiagLog.clear() },
                 onFeedback = ::sendFeedback,
-                onDiagMark = ::markIssue,
-                onProbeStart = ::startProbe,
-                onProbeAnswer = ::probeAnswer,
-                onProbeAbort = ::abortProbe,
                 onQuit = ::quitApp,
                 theme = theme,
                 onTheme = { t: AppTheme -> theme = t; ThemeStore.save(this, t) },
@@ -315,12 +250,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private val notifLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> if (ok) showIdleIsland() }
-
-    /** 沒在串流時，在 HyperIsland 顯示「未連接」。 */
-    private fun showIdleIsland() {
-        if (AirPlayStore.state.value.phase == Phase.Idle) AppIsland.show(this)
-    }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onStart() {
         super.onStart()
@@ -331,7 +261,7 @@ class MainActivity : ComponentActivity() {
         }
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) else showIdleIsland()
+        ) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     override fun onStop() {

@@ -94,18 +94,6 @@ object DiagCollector {
         streamState("取樣")
     }
 
-    /** 使用者按「標記：現在通知被擋住」：留下醒目的標記，並立刻拍一份和通知、鎖屏最相關的快照。 */
-    fun marker(c: Context) {
-        if (!on()) return
-        val st = AirPlayStore.state.value
-        DiagLog.d("LOG", "★★★ 使用者標記：現在通知被擋住 ★★★（串流狀態 ${st.phase}｜通知模式 ${PrefsStore.state.value.island}）")
-        notif(c)
-        privacySettings(c)
-        privacyState(c, "標記")
-        power(c, "標記")
-        network(c, "標記")
-    }
-
     // ------------------------------------------------------------ 手機與 App 資訊（DEVICE：APP / DEV）
 
     fun device(c: Context) {
@@ -279,7 +267,7 @@ object DiagCollector {
                 else -> "未知"
             }
             if (!brief) {
-                DiagLog.d("NOTIF", "通知權限=${yn(perm)}｜App 通知總開關=${yn(nm.areNotificationsEnabled())}｜勿擾=$filter｜通知模式=${PrefsStore.state.value.island}")
+                DiagLog.d("NOTIF", "通知權限=${yn(perm)}｜App 通知總開關=${yn(nm.areNotificationsEnabled())}｜勿擾=$filter")
                 nm.notificationChannels.forEach { ch ->
                     DiagLog.d("NOTIF", "  頻道 ${ch.id}｜重要性 ${ch.importance}｜鎖屏可見性 ${ch.lockscreenVisibility}｜可繞過勿擾=${yn(ch.canBypassDnd())}")
                 }

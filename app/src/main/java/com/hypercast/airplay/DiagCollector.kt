@@ -19,6 +19,8 @@ import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Debug
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.Display
@@ -71,6 +73,8 @@ object DiagCollector {
         privacyState(c, "串流開始")
         power(c, "串流開始")
         streamState("串流開始")
+        // 剛啟動前景服務時，系統還沒登記通知（上一版這裡永遠是 0 則）；稍後再讀一次才有意義
+        Handler(Looper.getMainLooper()).postDelayed({ notif(c) }, 2500)
     }
 
     /** 串流停止：和串流開始對照，看通知與鎖屏狀態是否恢復。 */
@@ -86,7 +90,20 @@ object DiagCollector {
         if (!on()) return
         power(c, "取樣")
         privacyState(c, "取樣")
+        notif(c, brief = true)
         streamState("取樣")
+    }
+
+    /** 使用者按「標記：現在通知被擋住」：留下醒目的標記，並立刻拍一份和通知、鎖屏最相關的快照。 */
+    fun marker(c: Context) {
+        if (!on()) return
+        val st = AirPlayStore.state.value
+        DiagLog.d("LOG", "★★★ 使用者標記：現在通知被擋住 ★★★（串流狀態 ${st.phase}｜通知模式 ${PrefsStore.state.value.island}）")
+        notif(c)
+        privacySettings(c)
+        privacyState(c, "標記")
+        power(c, "標記")
+        network(c, "標記")
     }
 
     // ------------------------------------------------------------ 手機與 App 資訊（DEVICE：APP / DEV）
@@ -249,7 +266,7 @@ object DiagCollector {
 
     // ------------------------------------------------------------ 通知（NOTIFICATION：NOTIF）
 
-    fun notif(c: Context) {
+    fun notif(c: Context, brief: Boolean = false) {
         if (!on()) return
         try {
             val nm = c.getSystemService(NotificationManager::class.java)
@@ -261,17 +278,21 @@ object DiagCollector {
                 4 -> "僅限鬧鐘"
                 else -> "未知"
             }
-            DiagLog.d("NOTIF", "通知權限=${yn(perm)}｜App 通知總開關=${yn(nm.areNotificationsEnabled())}｜勿擾=$filter｜通知模式=${PrefsStore.state.value.island}")
-            nm.notificationChannels.forEach { ch ->
-                DiagLog.d("NOTIF", "  頻道 ${ch.id}｜重要性 ${ch.importance}｜鎖屏可見性 ${ch.lockscreenVisibility}｜可繞過勿擾=${yn(ch.canBypassDnd())}")
+            if (!brief) {
+                DiagLog.d("NOTIF", "通知權限=${yn(perm)}｜App 通知總開關=${yn(nm.areNotificationsEnabled())}｜勿擾=$filter｜通知模式=${PrefsStore.state.value.island}")
+                nm.notificationChannels.forEach { ch ->
+                    DiagLog.d("NOTIF", "  頻道 ${ch.id}｜重要性 ${ch.importance}｜鎖屏可見性 ${ch.lockscreenVisibility}｜可繞過勿擾=${yn(ch.canBypassDnd())}")
+                }
             }
             val act = nm.activeNotifications
             DiagLog.d("NOTIF", "本 App 顯示中的通知 ${act.size} 則" +
                 if (act.isEmpty()) "" else "：" + act.joinToString("；") {
                     "id=${it.id}｜頻道=${it.notification.channelId}｜旗標=0x${Integer.toHexString(it.notification.flags)}｜持續性=${yn(it.isOngoing)}｜可清除=${yn(it.isClearable)}"
                 })
-            val p = HyperIsland.protocol(c)
-            DiagLog.d("NOTIF", "焦點通知協定=$p｜允許顯示=${yn(p > 0 && HyperIsland.canShow(c))}")
+            if (!brief) {
+                val p = HyperIsland.protocol(c)
+                DiagLog.d("NOTIF", "焦點通知協定=$p｜允許顯示=${yn(p > 0 && HyperIsland.canShow(c))}")
+            }
         } catch (e: Exception) {
             DiagLog.d("NOTIF", "讀取通知資訊失敗：${e.javaClass.simpleName}")
         }
@@ -290,6 +311,7 @@ object DiagCollector {
         if (!on()) return
         DiagLog.d("PRIV", "螢幕分享保護（開發者選項，Android 15+）停用=" +
             "${gset(c, "disable_screen_share_protections_for_apps_and_notifications")}｜開發者選項已開啟=${gset(c, "development_settings_enabled")}")
+        DiagLog.d("PRIV", "HyperCast 可改系統設定（WRITE_SECURE_SETTINGS）=${yn(ScreenShareGuard.canWrite(c))}｜螢幕分享保護鍵目前值=${ScreenShareGuard.read(c) ?: "未設定"}")
         DiagLog.d("PRIV", "鎖屏通知設定：顯示=${sset(c, "lock_screen_show_notifications")}｜允許私人內容=${sset(c, "lock_screen_allow_private_notifications")}（未設定＝讀不到，不代表關閉）")
     }
 

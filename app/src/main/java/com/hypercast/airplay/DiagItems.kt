@@ -84,7 +84,7 @@ enum class DiagItem(
         "discovery", "區網裝置探索（mDNS）",
         "確認有沒有找到你的 HomePod、Apple TV 與其分組資訊",
         listOf(
-            "發現到的 AirPlay 裝置：名稱、型號、功能旗標、連接埠、是否需要密碼",
+            "發現到的 AirPlay 裝置：名稱（可能含有人名，分享日誌前請自行確認）、型號、功能旗標、連接埠、是否需要密碼",
             "HomePod 立體聲組的分組欄位",
             "IP 位址最後一段與 MAC 位址已遮蔽",
         ),
@@ -151,10 +151,10 @@ enum class DiagItem(
             "螢幕是否亮著、鎖屏是否顯示中、裝置是否已鎖定（串流開始、結束與每分鐘取樣）",
             "鎖屏通知的顯示設定（是否顯示、是否隱藏私人內容）",
             "Android 15 以上「螢幕分享保護」開發者選項的狀態",
-            "串流前後的差異，用來判斷是否由螢幕擷取授權觸發",
+            "串流前後的差異，以及「通知被擋診斷」實驗的結果，用來判斷是否由螢幕擷取授權觸發",
         ),
         listOf(DiagPerm("不需要任何權限", null, PermKind.None, "只讀取系統設定的開關值")),
-        listOf("PRIV"),
+        listOf("PRIV", "PROBE"),
         R.drawable.ic_diag_privacy, 0xFF6FD58B, 0xFF2BA655,
     ),
     POWER(

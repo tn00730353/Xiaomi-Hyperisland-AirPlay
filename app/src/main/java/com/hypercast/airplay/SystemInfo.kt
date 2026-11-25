@@ -40,6 +40,7 @@ object SystemInfo {
         val m = PrefsStore.state.value.island
         return when {
             m == IslandMode.Normal -> "一般通知（不使用焦點通知，也不建立媒體工作階段）"
+            m == IslandMode.Minimal -> "極簡通知（診斷用：沒有自訂版面、按鈕與焦點通知）"
             m == IslandMode.Media ->
                 if (p <= 0) "媒體通知（非 HyperOS，沒有島，通知列照常顯示控制）" else "媒體通知（HyperOS 超級島協定 $p）"
             p <= 0 -> "這支手機不支援焦點通知（非 HyperOS 或系統過舊），目前等同「一般通知」"

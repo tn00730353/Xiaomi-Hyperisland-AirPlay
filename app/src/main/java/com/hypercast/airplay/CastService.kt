@@ -721,6 +721,7 @@ class CastService : Service() {
         val islandMode = PrefsStore.state.value.island
         if (islandMode == IslandMode.Media) return buildMediaNotification(s)
         releaseMediaSession()       // 一般通知 / 焦點通知都不使用媒體工作階段
+        if (islandMode == IslandMode.Minimal) return buildMinimalNotification(s)
         val connecting = s.phase == Phase.Connecting
         val title = when (s.phase) {
             Phase.Connecting -> "正在連線…"
@@ -775,6 +776,36 @@ class CastService : Service() {
         // 選了「獨立焦點通知」時，前景服務這則維持一般玻璃通知，焦點資料改由另一則可滑掉的通知帶（syncFocusOnly）。
         if (islandMode.isFocus && !PrefsStore.state.value.focusSeparate) {
             applyIsland(b, islandMode, islandInfo(s))
+        }
+        return b.build()
+    }
+
+    /** Beta4：診斷用的極簡通知。沒有 RemoteViews、沒有按鈕、沒有焦點參數，只有標題與一行文字。 */
+    private fun buildMinimalNotification(s: UiState): Notification {
+        val title = when (s.phase) {
+            Phase.Connecting -> "正在連線…"
+            Phase.Streaming -> targetsTitle(s)
+            else -> "HyperCast"
+        }
+        val sub = when (s.phase) {
+            Phase.Connecting -> targetsTitle(s)
+            Phase.Streaming -> streamingSubtitle(s)
+            else -> "待機"
+        }
+        val open = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val b = Notification.Builder(this, CH)
+            .setSmallIcon(R.drawable.ic_airplay)
+            .setContentTitle(title)
+            .setContentText(sub)
+            .setOngoing(false)
+            .setOnlyAlertOnce(true)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setContentIntent(open)
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            b.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
         }
         return b.build()
     }

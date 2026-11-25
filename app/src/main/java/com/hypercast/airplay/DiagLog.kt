@@ -186,6 +186,9 @@ object DiagLog {
     private val bareMacRe = Regex("""\b([0-9A-Fa-f]{6})[0-9A-Fa-f]{6}(?=@)""")
     private val uuidRe = Regex("""\b([0-9A-Fa-f]{8})-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b""")
     private val ipv4Re = Regex("""\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}\b""")
+    // Beta4：序號與公開金鑰也遮蔽（例如電視 / 螢幕廣播的 serialNumber=…）
+    private val serialRe = Regex("""(?i)\b(serialNumber|serial)=([^,}\s]+)""")
+    private val pkRe = Regex("""(?i)\bpk=[0-9a-f]{16,}""")
     private val ipv6Re = Regex("""\b(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}\b""")
 
     fun maskText(s: String): String = s
@@ -194,6 +197,8 @@ object DiagLog {
         .replace(uuidRe) { it.groupValues[1] + "-****" }
         .replace(ipv4Re) { "${it.groupValues[1]}.${it.groupValues[2]}.${it.groupValues[3]}.x" }
         .replace(ipv6Re) { "[IPv6 已遮蔽]" }
+        .replace(serialRe) { "${it.groupValues[1]}=****" }
+        .replace(pkRe) { "pk=****" }
 
     // ------------------------------------------------------------ 工作階段標頭
 

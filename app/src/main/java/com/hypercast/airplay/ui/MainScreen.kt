@@ -11,6 +11,9 @@ import com.hypercast.airplay.DiagItem
 import com.hypercast.airplay.DiagPerm
 import com.hypercast.airplay.HyperIsland
 import com.hypercast.airplay.PermKind
+import com.hypercast.airplay.ProbeStage
+import com.hypercast.airplay.ProbeStore
+import com.hypercast.airplay.ScreenShareGuard
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
@@ -117,10 +120,15 @@ fun MainScreen(
     onDiagExport: () -> Unit,
     onDiagClear: () -> Unit,
     onFeedback: () -> Unit,
+    onDiagMark: () -> Unit,
+    onProbeStart: () -> Unit,
+    onProbeAnswer: (Boolean) -> Unit,
+    onProbeAbort: () -> Unit,
     onQuit: () -> Unit,
 ) {
     val palette = paletteFor(theme)
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showProbe by rememberSaveable { mutableStateOf(false) }   // Beta4：通知被擋診斷頁
     var consentMode by rememberSaveable { mutableStateOf(0) }   // 0 無　1 開始記錄前的逐項同意　2 查看已同意項目
     val t = rememberInfiniteTransition(label = "scene").animateFloat(
         initialValue = 0f,
@@ -137,7 +145,9 @@ fun MainScreen(
             c.isAppearanceLightNavigationBars = !palette.dark
         }
     }
-    BackHandler(enabled = showSettings || consentMode != 0) { if (consentMode != 0) consentMode = 0 else showSettings = false }
+    BackHandler(enabled = showSettings || consentMode != 0 || showProbe) {
+        if (showProbe) showProbe = false else if (consentMode != 0) consentMode = 0 else showSettings = false
+    }
     var firstPhase by remember { mutableStateOf(true) }
     LaunchedEffect(state.phase) {
         if (firstPhase) { firstPhase = false; return@LaunchedEffect }
@@ -166,14 +176,24 @@ fun MainScreen(
                     .padding(horizontal = 20.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
-                if (consentMode != 0) {
+                if (showProbe) {
+                    ProbePage(
+                        diag = diag,
+                        onBack = { showProbe = false },
+                        onStart = onProbeStart,
+                        onAnswer = onProbeAnswer,
+                        onAbort = onProbeAbort,
+                        onMark = onDiagMark,
+                    )
+                } else if (consentMode != 0) {
                     DiagConsentPage(
                         viewOnly = consentMode == 2,
                         onBack = { consentMode = 0 },
                         onAgree = { items -> consentMode = 0; onDiagEnable(items) },
                     )
                 } else if (showSettings) {
-                    SettingsPage(theme, onTheme, delayMs, onDelay, diag, { consentMode = it }, onDiagDisable, onDiagExport, onDiagClear, onFeedback, onQuit) { showSettings = false }
+                    SettingsPage(theme, onTheme, delayMs, onDelay, diag, { consentMode = it }, onDiagDisable, onDiagExport, onDiagClear, onFeedback, onQuit,
+                        onOpenProbe = { showProbe = true }, onDiagMark = onDiagMark) { showSettings = false }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -183,6 +203,11 @@ fun MainScreen(
                         CircleButton(R.drawable.ic_settings) { showSettings = true }
                     }
                     StatusPill(state)
+                    if (diag.enabled) {
+                        GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+                            ActionRow("標記：現在通知被擋住", "日誌記錄中：按一下會寫入標記，並記下當下的通知與鎖屏狀態", onDiagMark)
+                        }
+                    }
                     NowPlaying(state, onDisconnect, onVolume, onMute)
                     if (state.phase == Phase.Streaming || state.phase == Phase.Connecting) {
                         ChannelCard(state, onChannelMode)
@@ -222,6 +247,8 @@ private fun SettingsPage(
     onDiagClear: () -> Unit,
     onFeedback: () -> Unit,
     onQuit: () -> Unit,
+    onOpenProbe: () -> Unit,
+    onDiagMark: () -> Unit,
     onBack: () -> Unit,
 ) {
     val p = LocalPalette.current
@@ -479,6 +506,22 @@ private fun SettingsPage(
                     "若島上沒有出現，請確認 系統設定 → 通知與控制中心 → HyperCast 已允許通知與焦點通知。",
                 12, secondary = true, modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
             )
+        }
+    }
+
+    // ---------------- Beta4：通知被擋診斷
+    GText("通知被擋住？", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            ActionRow(
+                "通知被擋診斷",
+                "一鍵實驗：分辨是系統的螢幕擷取保護，還是 HyperCast 的通知造成。不需要連線任何裝置",
+                onOpenProbe,
+            )
+            if (diag.enabled) {
+                Divider()
+                ActionRow("標記：現在通知被擋住", "寫入日誌標記，並記下當下的通知與鎖屏狀態", onDiagMark)
+            }
         }
     }
 
@@ -1085,6 +1128,205 @@ private fun NoticeDialog(
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 if (cancel != null) DialogButton(cancel, false, Modifier.weight(1f), onClick = onCancel)
                 DialogButton(confirm, true, Modifier.weight(1.3f), onClick = onConfirm)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- 通知被擋診斷（Beta4）
+
+private fun openSystemSettings(ctx: Context, action: String, fallback: String) {
+    try {
+        ctx.startActivity(android.content.Intent(action).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (_: Exception) {
+        android.widget.Toast.makeText(ctx, fallback, android.widget.Toast.LENGTH_LONG).show()
+    }
+}
+
+private fun probeVerdict(a: Boolean?, b: Boolean?): String = when {
+    a == true ->
+        "階段 A 就被擋住了：只要「螢幕擷取授權」一啟動，系統就隱藏了通知。這是 Android / HyperOS 的螢幕分享保護，" +
+            "和 HyperCast 的通知、串流都無關，HyperCast 無法自行繞過。請用下面的「系統設定」或「進階」關閉保護，再做一次實驗。" +
+            "若授權對話框有「單一 App / 整個螢幕」的選項，也請各做一次，看哪一種會擋。"
+    b == true ->
+        "階段 A 正常、加上音訊擷取（階段 B）後才被擋住：觸發點是「音訊擷取」。請開啟診斷日誌後再做一次，並把日誌傳給我。"
+    a == false && b == false ->
+        "兩個階段通知都正常：單純擷取聲音不會擋住通知，問題在串流本身或 HyperCast 的通知。" +
+            "下一步：用下面的「極簡通知」串流一次。如果這樣就不擋，是通知版面 / 焦點通知造成；如果仍然擋，" +
+            "開啟診斷日誌，被擋住時按「標記」，再把日誌傳給我。"
+    a == false ->
+        "階段 A 正常，但沒有錄音權限，無法做階段 B。"
+    else -> "實驗沒有完成。"
+}
+
+/**
+ * 通知被擋診斷：不需要連線任何裝置的兩階段實驗（只擷取授權 → 再加音訊擷取），
+ * 加上關閉系統螢幕分享保護的捷徑，以及「極簡通知」模式的入口。
+ */
+@Composable
+private fun ProbePage(
+    diag: DiagLog.UiState,
+    onBack: () -> Unit,
+    onStart: () -> Unit,
+    onAnswer: (Boolean) -> Unit,
+    onAbort: () -> Unit,
+    onMark: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    val st by ProbeStore.state.collectAsState()
+    var tick by rememberSaveable { mutableStateOf(0) }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        CircleButton(R.drawable.ic_back, onClick = onBack)
+        Spacer(Modifier.width(14.dp))
+        GText("通知被擋診斷", 28, FontWeight.Bold)
+    }
+
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            GText("為什麼會被擋住？", 17, FontWeight.SemiBold)
+            GText(
+                "HyperCast 要擷取系統聲音，必須啟動 Android 的「螢幕擷取授權」（只擷取聲音，不擷取畫面）。" +
+                    "Android 15 以上，系統在螢幕分享 / 錄製期間會隱藏通知內容；看起來就像被鎖定畫面擋住。" +
+                    "下面的實驗可以確認是不是這個原因。\n開始前請先確定通知欄裡有別的 App 的通知（例如傳訊息給自己）。",
+                13, secondary = true,
+            )
+        }
+    }
+
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            GText("實驗：只擷取，不串流", 17, FontWeight.SemiBold)
+            when (st.stage) {
+                ProbeStage.Idle -> {
+                    if (st.note.isNotBlank()) GText(st.note, 13, secondary = true)
+                    GText(
+                        "按下開始後，系統會詢問螢幕擷取授權。若對話框有「單一 App / 整個螢幕」的選項，兩種都可以各做一次實驗。",
+                        13, secondary = true,
+                    )
+                    DialogButton("開始實驗", true, Modifier.fillMaxWidth(), onClick = onStart)
+                }
+                ProbeStage.A -> {
+                    GText("階段 A：現在只有「螢幕擷取授權」，沒有串流、沒有音訊擷取。", 14, FontWeight.SemiBold)
+                    GText("請下拉通知欄：別的 App 的通知，看得到內容、能滑掉嗎？", 13, secondary = true)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        DialogButton("正常", false, Modifier.weight(1f), onClick = { onAnswer(false) })
+                        DialogButton("被擋住了", true, Modifier.weight(1f), onClick = { onAnswer(true) })
+                    }
+                    DialogButton("中止實驗", false, Modifier.fillMaxWidth(), onClick = onAbort)
+                }
+                ProbeStage.B -> {
+                    GText("階段 B：再加上音訊擷取（和串流時相同，但不連線、不送出聲音）。", 14, FontWeight.SemiBold)
+                    GText("請再看一次通知欄。", 13, secondary = true)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        DialogButton("正常", false, Modifier.weight(1f), onClick = { onAnswer(false) })
+                        DialogButton("被擋住了", true, Modifier.weight(1f), onClick = { onAnswer(true) })
+                    }
+                    DialogButton("中止實驗", false, Modifier.fillMaxWidth(), onClick = onAbort)
+                }
+                ProbeStage.Done -> {
+                    GText("結果", 14, FontWeight.SemiBold)
+                    GText(probeVerdict(st.answerA, st.answerB), 13)
+                    if (st.note.isNotBlank()) GText(st.note, 12, secondary = true)
+                    DialogButton("再做一次", false, Modifier.fillMaxWidth(), onClick = onStart)
+                }
+            }
+        }
+    }
+
+    GText("如果確認是系統的螢幕擷取保護", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            ActionRow(
+                "開啟「開發者選項」",
+                "找「停用螢幕分享保護」並打開。沒有這個選單時，先到「關於手機」連點「OS 版本」7 次開啟開發者模式",
+            ) {
+                openSystemSettings(
+                    ctx, android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS,
+                    "打不開開發者選項，請手動到 設定 → 更多設定 → 開發者選項",
+                )
+            }
+            Divider()
+            ActionRow("開啟「關於手機」", null) {
+                openSystemSettings(ctx, android.provider.Settings.ACTION_DEVICE_INFO_SETTINGS, "請手動到 設定 → 關於手機")
+            }
+            Divider()
+            ActionRow("開啟「投屏」設定", "HyperOS 若有「隱藏隱私項目」或類似的選項，請關閉") {
+                openSystemSettings(ctx, android.provider.Settings.ACTION_CAST_SETTINGS, "請手動到 設定 → 連接與共享 → 投屏")
+            }
+        }
+    }
+
+    val can = remember(tick) { ScreenShareGuard.canWrite(ctx) }
+    val cur = remember(tick) { ScreenShareGuard.read(ctx) }
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                GText("進階：由 HyperCast 切換「螢幕分享保護」", 17, FontWeight.SemiBold)
+                GText(
+                    "系統預設不允許 App 修改這個開關。在電腦上執行一次下面的指令授權後，這裡就能直接切換。" +
+                        "停用後，螢幕分享 / 錄製時系統不再隱藏通知與 App 的敏感內容（例如驗證碼）；HyperCast 本身只擷取聲音，不分享畫面。" +
+                        "之後若要用別的 App 把螢幕分享給別人，請記得先按「還原」。",
+                    12, secondary = true,
+                )
+            }
+            Divider()
+            InfoRow("授權狀態", if (can) "已授權" else "尚未授權")
+            Divider()
+            InfoRow(
+                "目前值",
+                when (cur) {
+                    "1" -> "1（已停用保護）"
+                    "0" -> "0（保護啟用）"
+                    null -> "未設定（系統預設：保護啟用）"
+                    else -> cur
+                },
+            )
+            Divider()
+            if (!can) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GText("在電腦上執行一次：", 12, secondary = true)
+                    GText(ScreenShareGuard.ADB_CMD, 13, FontWeight.Medium)
+                    GText("小米手機需要先在開發者選項開啟「USB 偵錯」與「USB 偵錯（安全設定）」，才能授權。", 12, secondary = true)
+                }
+                Divider()
+                ActionRow("複製指令", null) {
+                    val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                    cm?.setPrimaryClip(android.content.ClipData.newPlainText("adb", ScreenShareGuard.ADB_CMD))
+                    android.widget.Toast.makeText(ctx, "已複製指令", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Row(Modifier.fillMaxWidth().padding(18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    DialogButton("停用保護", true, Modifier.weight(1f), onClick = {
+                        val ok = ScreenShareGuard.set(ctx, true)
+                        tick++
+                        android.widget.Toast.makeText(
+                            ctx, if (ok) "已停用。請再做一次實驗或重新串流" else "寫入失敗，請確認 adb 授權", android.widget.Toast.LENGTH_LONG,
+                        ).show()
+                    })
+                    DialogButton("還原", false, Modifier.weight(1f), onClick = {
+                        val ok = ScreenShareGuard.set(ctx, false)
+                        tick++
+                        android.widget.Toast.makeText(ctx, if (ok) "已還原為啟用" else "寫入失敗", android.widget.Toast.LENGTH_SHORT).show()
+                    })
+                }
+            }
+        }
+    }
+
+    GText("如果實驗正常：換成極簡通知", 13, FontWeight.SemiBold, secondary = true, modifier = Modifier.padding(start = 6.dp, top = 4.dp))
+    GlassCard(Modifier.fillMaxWidth(), radius = 26.dp) {
+        Column {
+            ActionRow(
+                "改用「極簡通知」串流看看",
+                "沒有自訂版面、按鈕與焦點通知。回首頁連線一次，再看通知欄有沒有被擋住",
+            ) {
+                PrefsStore.setIsland(ctx, com.hypercast.airplay.IslandMode.Minimal)
+                android.widget.Toast.makeText(ctx, "已切換為極簡通知，回首頁連線一次試試", android.widget.Toast.LENGTH_LONG).show()
+            }
+            if (diag.enabled) {
+                Divider()
+                ActionRow("標記：現在通知被擋住", "寫入日誌標記，並記下當下的通知與鎖屏狀態", onMark)
             }
         }
     }
